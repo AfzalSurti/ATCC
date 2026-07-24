@@ -1,0 +1,7 @@
+# Place YOLO-format datasets here after labeling (Roboflow/CVAT export).
+# See config/dataset.example.yaml and config/india_classes.yaml.
+#
+# Example:
+#   data/datasets/atcc_india/images/train/...
+#   data/datasets/atcc_india/labels/train/...
+#   data/datasets/atcc_india/data.yaml

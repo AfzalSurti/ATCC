@@ -1,0 +1,32 @@
+# YOLO dataset config template for Phase 2 fine-tuning.
+# Copy to data/datasets/<your_dataset>/data.yaml and edit paths.
+#
+# Expected folder layout after Roboflow/CVAT export:
+#   data/datasets/atcc_india/
+#     data.yaml          ← this file
+#     images/train/
+#     images/val/
+#     labels/train/
+#     labels/val/
+
+path: data/datasets/atcc_india  # dataset root (relative to repo root or absolute)
+train: images/train
+val: images/val
+
+# Must match config/india_classes.yaml order exactly.
+names:
+  0: two_wheeler
+  1: three_wheeler_auto
+  2: car_jeep_van_taxi
+  3: mini_bus
+  4: standard_bus
+  5: rigid_truck_2_axle
+  6: mav_rigid_truck
+  7: articulated_truck
+  8: bullock_cart
+  9: horse_drawn
+  10: lcv_freight
+  11: cycle
+  12: cycle_rickshaw
+  13: rigid_truck_3_axle
+  14: other_vehicle

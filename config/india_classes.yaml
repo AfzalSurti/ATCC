@@ -1,0 +1,52 @@
+# India-specific ATCC vehicle taxonomy (Kotai-style feature parity target).
+#
+# IMPORTANT: These names are the LABELING TARGET for Phase 2 data collection.
+# There is no public drop-in pretrained model for this exact list.
+# Do NOT point detection.model_path at a COCO checkpoint and expect these names.
+#
+# Workflow:
+#   1. Label videos in Roboflow/CVAT using the `names` below (class id = list index).
+#   2. Export YOLO format → data/datasets/<name>/
+#   3. Copy config/dataset.example.yaml → data/datasets/<name>/data.yaml and fix paths.
+#   4. python scripts/train.py --data data/datasets/<name>/data.yaml
+#   5. Set camera_config.yaml:
+#        detection.model_path: runs/detect/atcc_india/weights/best.pt
+#        detection.backend: ultralytics
+#        classes.mode: custom
+#        classes.target: (same order as names below)
+
+nc: 15
+names:
+  0: two_wheeler
+  1: three_wheeler_auto
+  2: car_jeep_van_taxi
+  3: mini_bus
+  4: standard_bus
+  5: rigid_truck_2_axle
+  6: mav_rigid_truck
+  7: articulated_truck
+  8: bullock_cart
+  9: horse_drawn
+  10: lcv_freight
+  11: cycle
+  12: cycle_rickshaw
+  13: rigid_truck_3_axle
+  14: other_vehicle
+
+# Human-readable aliases for reports / UI (optional)
+display_names:
+  two_wheeler: "Two Wheeler"
+  three_wheeler_auto: "Three Wheeler / Auto Rickshaw"
+  car_jeep_van_taxi: "Car / Jeep / Van / Taxi"
+  mini_bus: "Mini Bus"
+  standard_bus: "Standard Bus"
+  rigid_truck_2_axle: "2-Axle Rigid Truck"
+  mav_rigid_truck: "MAV Rigid Truck"
+  articulated_truck: "Articulated / Semi-Articulated Truck"
+  bullock_cart: "Bullock Cart"
+  horse_drawn: "Horse Drawn"
+  lcv_freight: "LCV Freight"
+  cycle: "Cycle"
+  cycle_rickshaw: "Cycle Rickshaw"
+  rigid_truck_3_axle: "3-Axle Rigid Truck"
+  other_vehicle: "Other Vehicle"
