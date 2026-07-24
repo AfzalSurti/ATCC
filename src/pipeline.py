@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -14,12 +14,13 @@ import supervision as sv
 from src.aggregator import Aggregator, IntervalBucket
 from src.config_loader import load_config, resolve_path
 from src.counter import LaneCounter
-from src.detector import Detector
+from src.detector import create_detector
 from src.exporter import ExcelExporter
 from src.preprocessing import FramePreprocessor
 from src.schemas import Detection
+from src.stats_store import GLOBAL_STATS, StatsStore
 from src.tracker import Tracker
-from src.video_source import FramePacket, VideoSource
+from src.video_source import FramePacket, create_video_source
 
 logger = logging.getLogger(__name__)
 
@@ -27,20 +28,31 @@ logger = logging.getLogger(__name__)
 class Pipeline:
     """Wire video → preprocess → detect → track → count → aggregate → export."""
 
-    def __init__(self, config: dict[str, Any] | str | Path) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any] | str | Path,
+        stats_store: StatsStore | None = None,
+        on_frame: Callable[[np.ndarray, list[Detection]], None] | None = None,
+    ) -> None:
         """Build all pipeline stages from a config dict or YAML path.
 
         Args:
             config: Config mapping or path to ``camera_config.yaml``.
+            stats_store: Optional live stats publisher (defaults to global store).
+            on_frame: Optional callback with annotated frame + tracks each tick.
         """
         if isinstance(config, (str, Path)):
             self.config = load_config(config)
         else:
             self.config = config
 
-        self.video = VideoSource(self.config)
+        self.stats = stats_store or GLOBAL_STATS
+        self.on_frame = on_frame
+        self._stop = False
+
+        self.video = create_video_source(self.config)
         self.preprocessor = FramePreprocessor(self.config)
-        self.detector = Detector(self.config)
+        self.detector = create_detector(self.config)
         self.tracker = Tracker(self.config)
         self.exporter = ExcelExporter(self.config)
         self.aggregator = Aggregator(
@@ -51,10 +63,19 @@ class Pipeline:
 
         vis_cfg = self.config.get("visualization", {})
         self.visualize = bool(vis_cfg.get("enabled", True))
+        self.publish_stats = bool(vis_cfg.get("publish_stats", True))
         self.vis_dir = resolve_path(str(vis_cfg.get("output_dir", "outputs/annotated")))
         self._writer: cv2.VideoWriter | None = None
         self._timing = bool(self.config.get("logging", {}).get("per_frame_timing", True))
         self.total_events = 0
+        self._fps_ema = 0.0
+
+    def request_stop(self) -> None:
+        """Signal the run loop to exit (used by live stream / dashboard)."""
+        self._stop = True
+        stop_fn = getattr(self.video, "stop", None)
+        if callable(stop_fn):
+            stop_fn()
 
     def _on_interval_complete(self, bucket: IntervalBucket) -> None:
         """Export a completed interval and reset per-lane window mirrors."""
@@ -127,13 +148,35 @@ class Pipeline:
         )
         return canvas
 
+    def _publish(self, annotated: np.ndarray, packet: FramePacket, frame_ms: float) -> None:
+        """Push live stats for the dashboard."""
+        if not self.publish_stats:
+            return
+        inst_fps = 1000.0 / frame_ms if frame_ms > 0 else 0.0
+        self._fps_ema = inst_fps if self._fps_ema == 0 else (0.8 * self._fps_ema + 0.2 * inst_fps)
+        lane_counts = {lane.name: lane.display_count for lane in self.counter.lanes}
+        class_counts: dict[str, int] = {}
+        for lane in self.counter.lanes:
+            for cls_name, n in lane.counts.items():
+                class_counts[cls_name] = class_counts.get(cls_name, 0) + n
+        self.stats.update_frame(
+            frame_bgr=annotated,
+            total_events=self.total_events,
+            lane_counts=lane_counts,
+            class_counts=class_counts,
+            fps=self._fps_ema,
+            timestamp=packet.timestamp,
+            report_path=str(self.exporter.workbook_path),
+        )
+
     def run(self) -> Path:
-        """Execute the full pipeline until the video ends; flush on exit.
+        """Execute the full pipeline until the video ends or stop is requested.
 
         Returns:
             Path to the Excel workbook written.
         """
         t_pipeline_start = time.perf_counter()
+        self.stats.set_status("running")
 
         try:
             with self.video:
@@ -141,14 +184,19 @@ class Pipeline:
                     self.preprocessor.build_roi_mask(self.video.width, self.video.height)
 
                 for packet in self.video:
+                    if self._stop:
+                        break
                     self._process_frame(packet)
 
+        except Exception:
+            self.stats.set_status("error")
+            raise
         finally:
-            # Graceful shutdown: flush partial interval to Excel.
             self.aggregator.flush()
             if self._writer is not None:
                 self._writer.release()
                 self._writer = None
+            self.stats.set_status("stopped")
 
         elapsed = time.perf_counter() - t_pipeline_start
         logger.info(
@@ -180,14 +228,30 @@ class Pipeline:
         for event in events:
             self.aggregator.add_event(event, packet.timestamp)
             self.total_events += 1
+            self.stats.push_event(
+                {
+                    "track_id": event.track_id,
+                    "lane": event.lane,
+                    "direction": event.direction,
+                    "class": event.class_name,
+                    "time": packet.timestamp.isoformat(),
+                }
+            )
         self.aggregator.observe_time(packet.timestamp)
         t_count = time.perf_counter()
 
+        annotated = self._annotate(packet.frame, tracked) if (self.visualize or self.publish_stats) else packet.frame
+
         if self.visualize:
             self._ensure_writer(packet.frame, self.video.target_fps)
-            annotated = self._annotate(packet.frame, tracked)
             if self._writer is not None:
                 self._writer.write(annotated)
+
+        if self.on_frame is not None:
+            self.on_frame(annotated, tracked)
+
+        total_ms = (time.perf_counter() - t0) * 1000
+        self._publish(annotated, packet, total_ms)
 
         if self._timing:
             logger.info(
@@ -196,7 +260,7 @@ class Pipeline:
                 (t_det - t0) * 1000,
                 (t_track - t_det) * 1000,
                 (t_count - t_track) * 1000,
-                (time.perf_counter() - t0) * 1000,
+                total_ms,
                 len(detections),
                 len(tracked),
                 len(events),

@@ -1,9 +1,15 @@
-# ATCC Phase 1 — camera / pipeline configuration
+# ATCC camera / pipeline configuration
 # All runtime paths and thresholds live here (no hardcoded paths in code).
 
 source:
-  type: file  # Phase 1: file only. Phase 3: "rtsp"
+  # "file" | "rtsp" | "webcam" (webcam: set path to "0")
+  type: file
   path: "data/sample_videos/sample1.mp4"
+  # Live-only options (Phase 3):
+  # url: "rtsp://user:pass@192.168.1.10:554/stream1"
+  reconnect_seconds: 3
+  read_timeout_ms: 5000
+  max_reconnects: 0  # 0 = unlimited
 
 frame_sampling:
   # Process at ~this FPS regardless of source FPS (every Nth frame derived from source FPS).
@@ -16,20 +22,16 @@ roi:
   polygon: []
 
 preprocessing:
-  # Letterbox / resize to model input size (Ultralytics handles letterbox; we pass imgsz).
   imgsz: 640
-  # CLAHE lighting normalization (optional)
   clahe:
     enabled: false
     clip_limit: 2.0
     tile_grid_size: [8, 8]
-  # Optional: skip inference on near-static frames (NOT background-subtraction detection)
   motion_skip:
     enabled: false
     min_diff_ratio: 0.01
 
 lanes:
-  # Counting lines — adjust to match your video. Coordinates are in original frame pixels.
   - name: "lane_1_northbound"
     direction: "north"
     line: [[200, 400], [600, 400]]
@@ -38,27 +40,35 @@ lanes:
     line: [[700, 400], [1100, 400]]
 
 detection:
+  # backend: ultralytics | onnx | tensorrt
+  backend: ultralytics
   model_path: "yolov8n.pt"
+  # onnx_path: "outputs/models/yolov8n.onnx"
+  # engine_path: "outputs/models/yolov8n.engine"
   confidence_threshold: 0.4
   iou_threshold: 0.5
   device: ""  # "" = auto (CUDA if available), or "cpu" / "0"
 
-# Single source of truth for vehicle class taxonomy (Phase 1 = COCO-mapped placeholders).
-# IMPORTANT: Full India-specific 16-class taxonomy requires a custom labeled dataset
-# (Phase 2). Do not treat these as production-accurate Indian vehicle classes.
+# Single source of truth for vehicle class taxonomy.
+# mode: coco_mapped  → Phase 1 pretrained COCO placeholder mapping
+# mode: custom       → Phase 2 fine-tuned model; names come from target[] order
 classes:
-  # Target display names used in Excel reports (mapped from COCO via detector.map_coco_to_target)
+  mode: coco_mapped
   target:
     - bicycle
     - motorcycle
     - car
     - bus
     - truck
-  # COCO class IDs we keep from pretrained YOLOv8 (bicycle=1, car=2, motorcycle=3, bus=5, truck=7)
   coco_vehicle_ids: [1, 2, 3, 5, 7]
+  # After Phase 2 training, switch to:
+  # mode: custom
+  # target:  # must match config/india_classes.yaml / data.yaml order
+  #   - two_wheeler
+  #   - three_wheeler_auto
+  #   - ...
 
 tracking:
-  # ByteTrack defaults (supervision.ByteTrack)
   track_activation_threshold: 0.25
   lost_track_buffer: 30
   minimum_matching_threshold: 0.8
@@ -67,16 +77,14 @@ tracking:
 export:
   interval_minutes: 15
   output_dir: "outputs/reports"
-  # "append" = one workbook, rows per interval; "session" = new file each run
   mode: append
-  # "single" = one sheet; "per_day" = one sheet per calendar day
   sheet_strategy: single
   filename_prefix: "atcc_report"
 
 visualization:
-  # Draw boxes / lines / counts on annotated output video (optional, for debugging)
   enabled: true
   output_dir: "outputs/annotated"
+  publish_stats: true  # feed Streamlit dashboard via StatsStore
 
 logging:
   level: INFO

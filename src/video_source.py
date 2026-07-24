@@ -1,11 +1,9 @@
-"""Video source: file / RTSP frame iterator with configurable sampling.
-
-Phase 1 implements file input fully. RTSP is scaffolded for Phase 3.
-"""
+"""Video source: file / RTSP frame iterator with configurable sampling."""
 
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Generator, Iterator
@@ -29,12 +27,25 @@ class FramePacket:
     source_fps: float
 
 
-class VideoSource:
-    """Open a video file or RTSP URL and yield sampled frames.
+def create_video_source(config: dict[str, Any]) -> "VideoSource":
+    """Factory returning a file or live RTSP video source.
 
-    Frame sampling targets ``frame_sampling.target_fps`` so inference runs at a
-    stable rate (default ~12 FPS) regardless of source FPS.
+    Args:
+        config: Full pipeline config.
+
+    Returns:
+        ``VideoSource`` or ``LiveVideoSource``.
     """
+    source_type = str(config.get("source", {}).get("type", "file")).lower()
+    if source_type in {"rtsp", "live", "stream", "webcam"}:
+        return LiveVideoSource(config)
+    if source_type == "file":
+        return VideoSource(config)
+    raise ValueError(f"Unsupported source.type: {source_type!r}")
+
+
+class VideoSource:
+    """Open a video file and yield sampled frames."""
 
     def __init__(self, config: dict[str, Any]) -> None:
         """Initialize from the top-level pipeline config.
@@ -53,16 +64,6 @@ class VideoSource:
         self.frame_count: int = 0
         self.width: int = 0
         self.height: int = 0
-
-        if self.source_type == "rtsp":
-            # Phase 3 — live stream support
-            raise NotImplementedError(
-                "RTSP/live stream support is Phase 3. "
-                "Use source.type: file for Phase 1 MVP."
-            )
-
-        if self.source_type != "file":
-            raise ValueError(f"Unsupported source.type: {self.source_type!r}")
 
     def open(self) -> None:
         """Open the video capture and read stream metadata."""
@@ -112,22 +113,21 @@ class VideoSource:
 
     def _sample_stride(self) -> int:
         """Compute how many source frames to skip between processed frames."""
-        stride = max(1, int(round(self.source_fps / self.target_fps)))
-        return stride
+        return max(1, int(round(self.source_fps / self.target_fps)))
 
     def frames(self) -> Generator[FramePacket, None, None]:
-        """Yield sampled frames with timestamps derived from FPS + index.
-
-        For files, timestamps are ``epoch_start + frame_index / source_fps``.
-        Wall-clock timestamps are reserved for live streams (Phase 3).
-        """
+        """Yield sampled frames with timestamps derived from FPS + index."""
         if self._cap is None:
             raise RuntimeError("VideoSource is not open. Call open() first.")
 
         stride = self._sample_stride()
-        logger.info("Frame sampling stride=%d (source_fps=%.2f, target=%.2f)", stride, self.source_fps, self.target_fps)
+        logger.info(
+            "Frame sampling stride=%d (source_fps=%.2f, target=%.2f)",
+            stride,
+            self.source_fps,
+            self.target_fps,
+        )
 
-        # Anchor file timestamps to "now" so Excel intervals look sensible.
         session_start = datetime.now(timezone.utc)
         source_idx = 0
         emitted = 0
@@ -139,7 +139,6 @@ class VideoSource:
 
             if source_idx % stride == 0:
                 elapsed_sec = source_idx / self.source_fps
-                # Use timezone-aware UTC; exporter formats locally-friendly strings.
                 ts = datetime.fromtimestamp(
                     session_start.timestamp() + elapsed_sec,
                     tz=timezone.utc,
@@ -155,25 +154,149 @@ class VideoSource:
 
             source_idx += 1
 
-        logger.info("Video exhausted after %d sampled frames (%d source frames)", emitted, source_idx)
+        logger.info(
+            "Video exhausted after %d sampled frames (%d source frames)",
+            emitted,
+            source_idx,
+        )
 
     def __iter__(self) -> Iterator[FramePacket]:
         return self.frames()
 
 
 class LiveVideoSource(VideoSource):
-    """Phase 3 stub — RTSP / live camera source with wall-clock timestamps.
+    """RTSP / webcam live source with wall-clock timestamps and reconnect.
 
-    TODO(Phase 3): Implement RTSP reconnect, buffering, and wall-clock stamps.
+    Config keys under ``source``:
+      - type: rtsp | live | stream | webcam
+      - path / url: RTSP URL, or webcam index as string (\"0\")
+      - reconnect_seconds: wait between reconnect attempts (default 3)
+      - read_timeout_ms: OpenCV open/read timeout hint (default 5000)
+      - max_reconnects: 0 = unlimited (default 0)
     """
 
     def __init__(self, config: dict[str, Any]) -> None:
-        """Stub initializer — raises until Phase 3."""
-        raise NotImplementedError(
-            "LiveVideoSource is a Phase 3 stub. See docs/TECHNICAL_DESIGN.md."
+        """Initialize live capture settings from config."""
+        super().__init__(config)
+        source_cfg = config.get("source", {})
+        self.raw_path = str(
+            source_cfg.get("url")
+            or source_cfg.get("path")
+            or source_cfg.get("rtsp")
+            or ""
+        )
+        if not self.raw_path:
+            raise ValueError("Live source requires source.path or source.url (RTSP / webcam index).")
+
+        self.reconnect_seconds: float = float(source_cfg.get("reconnect_seconds", 3))
+        self.read_timeout_ms: int = int(source_cfg.get("read_timeout_ms", 5000))
+        self.max_reconnects: int = int(source_cfg.get("max_reconnects", 0))
+        self._stop = False
+
+    def open(self) -> None:
+        """Open RTSP/webcam with low-latency buffer settings."""
+        self._open_capture(initial=True)
+
+    def _open_capture(self, initial: bool = False) -> None:
+        """(Re)open the capture device/URL."""
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+
+        target = self.raw_path
+        # Webcam index support: path "0" → device 0
+        open_arg: str | int = int(target) if target.isdigit() else target
+
+        cap = cv2.VideoCapture(open_arg)
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            if self.read_timeout_ms > 0 and hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, float(self.read_timeout_ms))
+                cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, float(self.read_timeout_ms))
+        except Exception:  # noqa: BLE001 — backend-dependent properties
+            pass
+
+        if not cap.isOpened():
+            raise RuntimeError(f"Failed to open live source: {self.raw_path}")
+
+        self._cap = cap
+        self.source_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        if self.source_fps <= 0:
+            self.source_fps = max(self.target_fps, 25.0)
+        self.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        self.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        self.frame_count = 0
+        logger.info(
+            "%s live source %s | %dx%d @ ~%.2f FPS | target_fps=%.2f",
+            "Opened" if initial else "Reconnected",
+            self.raw_path,
+            self.width,
+            self.height,
+            self.source_fps,
+            self.target_fps,
         )
 
+    def stop(self) -> None:
+        """Request the live frame loop to stop."""
+        self._stop = True
+
     def frames(self) -> Generator[FramePacket, None, None]:
-        """Yield live frames with wall-clock timestamps (not implemented)."""
-        raise NotImplementedError("LiveVideoSource.frames — Phase 3")
-        yield  # pragma: no cover — makes this a generator for type checkers
+        """Yield live frames throttled to ``target_fps`` with wall-clock timestamps."""
+        if self._cap is None:
+            raise RuntimeError("LiveVideoSource is not open. Call open() first.")
+
+        min_interval = 1.0 / max(self.target_fps, 0.1)
+        emitted = 0
+        source_idx = 0
+        reconnects = 0
+        last_emit = 0.0
+
+        while not self._stop:
+            assert self._cap is not None
+            ok, frame = self._cap.read()
+            if not ok or frame is None:
+                reconnects += 1
+                if self.max_reconnects and reconnects > self.max_reconnects:
+                    logger.error("Max reconnects (%d) exceeded — stopping live source", self.max_reconnects)
+                    break
+                logger.warning(
+                    "Live read failed — reconnecting in %.1fs (attempt %d)",
+                    self.reconnect_seconds,
+                    reconnects,
+                )
+                time.sleep(self.reconnect_seconds)
+                try:
+                    self._open_capture(initial=False)
+                except RuntimeError as exc:
+                    logger.error("Reconnect failed: %s", exc)
+                continue
+
+            reconnects = 0
+            source_idx += 1
+            now = time.monotonic()
+            if last_emit and (now - last_emit) < min_interval:
+                continue
+            last_emit = now
+
+            # Grab freshest frame if buffer still has backlog.
+            for _ in range(2):
+                peek_ok, peek = self._cap.read()
+                if peek_ok and peek is not None:
+                    frame = peek
+                    source_idx += 1
+                else:
+                    break
+
+            if self.width == 0 or self.height == 0:
+                self.height, self.width = frame.shape[:2]
+
+            yield FramePacket(
+                frame=frame,
+                frame_index=emitted,
+                source_frame_index=source_idx,
+                timestamp=datetime.now(timezone.utc),
+                source_fps=self.source_fps,
+            )
+            emitted += 1
+
+        logger.info("Live source stopped after %d sampled frames", emitted)
