@@ -71,7 +71,7 @@ def main() -> int:
     )
 
     if config.get("source", {}).get("type", "file") != "file":
-        logging.error("run_on_video.py requires source.type=file (Phase 1).")
+        logging.error("run_on_video.py requires source.type=file. Use scripts/run_on_stream.py for RTSP.")
         return 2
 
     report = Pipeline(config).run()

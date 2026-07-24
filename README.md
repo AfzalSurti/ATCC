@@ -1,64 +1,88 @@
-# ATCC Clone — Automatic Traffic Counter & Classifier
+# ATCC — Automatic Traffic Counter & Classifier
 
-Video-based vehicle detection, classification, tracking, per-lane counting, and Excel export.
+Video-based vehicle detection, classification, tracking, per-lane counting, Excel export, live RTSP, Streamlit dashboard, and ONNX/TensorRT export paths.
 
-**Phase 1 MVP (this repo):** pretrained YOLOv8 (COCO vehicle classes) + ByteTrack + line-crossing counts + interval Excel reports on recorded video files.
+| Phase | Status | What |
+|-------|--------|------|
+| 1 | Done | File video + COCO YOLOv8 + ByteTrack + Excel |
+| 2 | Done (needs your labels) | `scripts/train.py` + India class taxonomy + `classes.mode: custom` |
+| 3 | Done | RTSP/webcam live source + Streamlit dashboard |
+| 4 | Done | ONNX / TensorRT export + `detection.backend` swap |
 
-> **Not production India-class taxonomy yet.** Full Kotai-style classes (auto rickshaw, MAV, bullock cart, etc.) need a custom labeled dataset (Phase 2). Phase 1 maps COCO `bicycle / motorcycle / car / bus / truck` as placeholders.
+> **India 16-class accuracy** still needs real labeled data (Roboflow/CVAT). Phase 2 provides the training path — it does not invent synthetic labels.
 
 ## Architecture
 
 ```
-Video file
-  → FrameProcessor (ROI, optional CLAHE, frame sampling)
-  → Detector (YOLOv8 wrapper)
-  → Tracker (ByteTrack via supervision)
-  → LaneCounter (LineZone, dedupe by track_id)
-  → Aggregator (15-min buckets by default)
-  → ExcelExporter (.xlsx)
+Video (file / RTSP / webcam)
+  → Preprocess (ROI, CLAHE, sampling)
+  → Detector (ultralytics | onnx | tensorrt)
+  → Tracker (ByteTrack)
+  → LaneCounter (line crossing, track_id dedupe)
+  → Aggregator (15-min buckets)
+  → ExcelExporter
+  → StatsStore → Streamlit dashboard
 ```
 
-Each stage is a separate module under `src/` so the detector can later be swapped for TensorRT without touching counting logic.
-
-## Setup (Windows / PowerShell)
+## Setup
 
 ```powershell
 cd D:\ATCC
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-NVIDIA GPU: ensure a matching CUDA build of PyTorch is installed if you want GPU inference (`detection.device: "0"`). CPU works with `detection.device: "cpu"`.
+## Phase 1 — recorded video
 
-## Configure
-
-1. Put a traffic video at `data/sample_videos/sample1.mp4` (or any path).
-2. Edit `config/camera_config.yaml`:
-   - `source.path` — video path
-   - `lanes[].line` — counting line endpoints in **pixel coordinates** of the source video
-   - `export.interval_minutes` — report window (default 15)
-3. Optional richer lane example: `configs_examples/sample_lanes.yaml`
-
-## Run on a video (Phase 1)
+1. Put a video at `data/sample_videos/sample1.mp4`
+2. Calibrate `lanes` in `config/camera_config.yaml`
+3. Run:
 
 ```powershell
-python scripts/run_on_video.py --config config/camera_config.yaml --video data/sample_videos/sample1.mp4
+python scripts/run_on_video.py --video data/sample_videos/sample1.mp4
 ```
 
-Useful flags:
+Excel → `outputs/reports/` · annotated MP4 → `outputs/annotated/`
 
-| Flag | Meaning |
-|------|---------|
-| `--model yolov8s.pt` | Larger COCO checkpoint |
-| `--no-viz` | Skip annotated MP4 |
-| `--log-level DEBUG` | Verbose timing / counts |
+## Phase 2 — custom India classes (requires your dataset)
 
-Outputs:
+1. Label with classes from `config/india_classes.yaml`
+2. Export YOLO format under `data/datasets/<name>/` (see `config/dataset.example.yaml`)
+3. Train:
 
-- Excel: `outputs/reports/atcc_report_YYYYMMDD.xlsx`
-- Annotated video (if enabled): `outputs/annotated/annotated_*.mp4`
+```powershell
+python scripts/train.py --data data/datasets/<name>/data.yaml --model yolov8s.pt --epochs 100
+```
+
+4. Point config at `best.pt` and set `classes.mode: custom` (target list = data.yaml order)
+
+## Phase 3 — live stream + dashboard
+
+```powershell
+# RTSP or webcam index
+python scripts/run_on_stream.py --rtsp rtsp://user:pass@cam/stream1
+python scripts/run_on_stream.py --rtsp 0
+
+# Streamlit live view + stats
+python scripts/run_dashboard.py --config config/camera_config.yaml --source rtsp://...
+```
+
+## Phase 4 — edge export
+
+```powershell
+python scripts/export_onnx.py --weights yolov8n.pt --outdir outputs/models
+# optional TensorRT (CUDA + TensorRT required):
+python scripts/export_onnx.py --weights yolov8n.pt --tensorrt
+```
+
+Then in config:
+
+```yaml
+detection:
+  backend: onnx   # or tensorrt
+  model_path: "outputs/models/yolov8n.onnx"
+```
 
 ## Tests
 
@@ -66,17 +90,10 @@ Outputs:
 pytest tests/ -q
 ```
 
-## Phase roadmap
+## Docs
 
-| Phase | Status | Scope |
-|-------|--------|--------|
-| 1 | **Implemented** | File video, COCO classes, ByteTrack, Excel |
-| 2 | Stub `scripts/train.py` | Custom India classes + fine-tune |
-| 3 | Stub `scripts/run_on_stream.py` | RTSP + Streamlit dashboard |
-| 4 | Stub `TensorRTDetector` | ONNX/TensorRT edge deploy |
+Full technical detail: **[docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md)**
 
-See **[docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md)** for full technical detail of every module, data flow, class mapping, and why each design choice was made.
-
-## Reference product (feature parity target)
+## Reference
 
 [Kotai Electronics ATCC](https://kotaielectronics.com/automatic-traffic-counter-and-classifier/)

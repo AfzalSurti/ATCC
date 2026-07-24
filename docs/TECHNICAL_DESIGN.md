@@ -16,25 +16,24 @@ We are targeting feature parity with products like [Kotai ATCC](https://kotaiele
 
 ### Does
 
-- End-to-end pipeline on a **recorded video file**
-- **YOLOv8** pretrained on **COCO** (5 vehicle-ish classes used)
-- **ByteTrack** tracking via Roboflow `supervision` (not a hand-rolled tracker)
+- End-to-end pipeline on **recorded video files** and **RTSP / webcam**
+- **YOLOv8** pretrained on **COCO** (5 vehicle classes) or **custom fine-tuned** weights
+- **ByteTrack** tracking via Roboflow `supervision`
 - Per-lane **line-crossing** counts with **track_id deduplication**
 - Time-bucketed aggregation (default **15 minutes**)
 - Excel export (`.xlsx`) via pandas + openpyxl
 - YAML-driven config (no hardcoded paths in logic)
-- Modular stages so detector backend can be swapped later
-- Unit tests for counter dedupe + aggregator rollover
-- Stubs/TODOs for Phases 2–4
+- Modular stages + `create_detector()` for Ultralytics / ONNX / TensorRT
+- Streamlit live dashboard
+- Unit tests for counter, aggregator, geometry, factories
+- Training CLI for Phase 2 (requires your real labeled dataset)
 
 ### Does not
 
 - Background subtraction (MOG2/KNN) as detection — **forbidden by design**
 - Fake synthetic India-class training data
-- Pretending a fine-tuned custom model exists
-- Full RTSP live pipeline (Phase 3 stub only)
-- Streamlit dashboard (Phase 3)
-- TensorRT / Jetson deployment (Phase 4 stub only)
+- Pretend a fine-tuned custom model exists without labeled data
+- Bundle NVIDIA TensorRT itself (export works when TensorRT is installed on the machine)
 
 ---
 
@@ -233,28 +232,28 @@ See `config/camera_config.yaml` for the live template. Important groups:
 
 | Key | Purpose |
 |-----|---------|
-| `source.type/path` | `file` + path (RTSP blocked until Phase 3) |
+| `source.type/path/url` | `file` / `rtsp` / `webcam`; reconnect options for live |
 | `frame_sampling.target_fps` | Inference rate target |
 | `roi.enabled/polygon` | Road area mask |
 | `lanes[]` | Names, directions, counting lines |
-| `detection.*` | Model path, conf, IoU, device |
+| `detection.backend` | `ultralytics` \| `onnx` \| `tensorrt` |
+| `detection.model_path` | `.pt` / `.onnx` / `.engine` |
+| `classes.mode` | `coco_mapped` (Phase 1) or `custom` (Phase 2) |
 | `classes.target` / `coco_vehicle_ids` | Class taxonomy source of truth |
 | `tracking.*` | ByteTrack hyperparameters |
 | `export.*` | Interval, output dir, mode, sheets |
-| `visualization.*` | Annotated video toggle |
+| `visualization.*` | Annotated video + `publish_stats` for dashboard |
 | `logging.*` | Level + timing |
 
 ---
 
-## 8. India class list vs Phase 1 reality
+## 8. India class list vs COCO placeholder
 
-Reference product classes (India-oriented), for future Phase 2 labeling:
+Canonical labeling taxonomy: `config/india_classes.yaml` (15 named classes + other).
 
-Two Wheeler, Three Wheeler/Auto Rickshaw, Car/Jeep/Van/Taxi, Mini Bus, Standard Bus, 2-Axle Rigid Truck, MAV Rigid Truck, Articulated/Semi-Articulated Truck, Bullock Cart, Horse Drawn, LCV Freight, Cycle, Cycle Rickshaw, 3-Axle Rigid Truck, …
+**Until you train:** keep `classes.mode: coco_mapped` with COCO `bicycle / motorcycle / car / bus / truck`.
 
-**Phase 1 report classes:** `bicycle`, `motorcycle`, `car`, `bus`, `truck` (COCO-mapped).
-
-Do not expand the YAML class list to 16 names without a model that can actually predict them—that would produce misleading Excel “zeros” and false confidence.
+**After you train:** set `classes.mode: custom` and `classes.target` to match `data.yaml` name order. Do not list India class names against a COCO checkpoint — that produces false Excel confidence.
 
 ---
 
@@ -266,15 +265,9 @@ Pipeline logs look like:
 frame 42 | det=12.3ms track=1.1ms count=0.4ms total=15.0ms | dets=5 tracks=5 events=0
 ```
 
-Typical bottleneck: **detector**. Mitigations already available:
+Typical bottleneck: **detector**. Mitigations:
 
-- Lower `target_fps`
-- Smaller model (`yolov8n` vs `yolov8s`)
-- Smaller `imgsz`
-- Enable `motion_skip`
-- Use CUDA (`device: "0"`)
-
-Counting/tracking are cheap relative to YOLO on GPU or CPU.
+- Lower `target_fps` · smaller model · smaller `imgsz` · `motion_skip` · CUDA · ONNX/TensorRT
 
 ---
 
@@ -282,56 +275,51 @@ Counting/tracking are cheap relative to YOLO on GPU or CPU.
 
 | Test | Guarantees |
 |------|------------|
-| `tests/test_counter.py` | Same `track_id` counted once; different IDs separate; class snapshot |
-| `tests/test_aggregator.py` | 15-min rollover callback; flush partial window |
+| `tests/test_counter.py` | Same `track_id` counted once; class snapshot |
+| `tests/test_aggregator.py` | 15-min rollover + flush |
+| `tests/test_geometry.py` | Segment intersection |
+| `tests/test_detector_factory.py` | Backend factory + COCO map + video source factory |
 
-These tests **do not** download YOLO weights—they unit-test counting math with synthetic boxes.
+Tests avoid downloading YOLO weights where possible.
 
 ---
 
-## 11. Phase 2–4 plug-in plan
+## 11. Phases 2–4 (implemented)
 
-### Phase 2 — Custom train (`scripts/train.py` stub)
+### Phase 2 — Custom train
 
-1. Collect video across sites/lighting
-2. Label full taxonomy (Roboflow/CVAT)
-3. `yolo detect train ...`
-4. Set `detection.model_path` → `best.pt`
-5. Remove `map_coco_to_target`; update `classes.target`
+- `scripts/train.py` validates real YOLO dataset paths, then fine-tunes Ultralytics YOLO
+- `config/india_classes.yaml` + `config/dataset.example.yaml` define taxonomy / layout
+- Detector supports `classes.mode: custom` (skips `map_coco_to_target`)
+- **Still required from you:** collect + label real roadside video (no synthetic labels)
 
 ### Phase 3 — Live + dashboard
 
-- Implement `LiveVideoSource` (RTSP reconnect, wall-clock timestamps)
-- Flesh out `scripts/run_on_stream.py`
-- Add Streamlit live view consuming shared stats (not built in Phase 1)
+- `LiveVideoSource`: RTSP/webcam, wall-clock timestamps, reconnect, low-latency buffer drain
+- `scripts/run_on_stream.py`: SIGINT flush to Excel
+- `src/stats_store.py` + `dashboard/app.py` + `scripts/run_dashboard.py`: live view, lane/class tables, recent events
 
 ### Phase 4 — Edge
 
-- Export ONNX → TensorRT engine
-- Implement `TensorRTDetector.predict()` returning the same `Detection` list
-- No changes required to tracker/counter/aggregator/exporter if the contract holds
+- `scripts/export_onnx.py`: export ONNX (+ optional TensorRT `.engine`)
+- `create_detector()`: `ultralytics` | `onnx` | `tensorrt` backends, same `predict()` contract
+- Tracker / counter / aggregator / exporter unchanged when swapping backends
 
 ---
 
-## 12. What was built in this Cursor session (task log)
+## 12. Session build log
 
-Commits were made per logical task and pushed to `origin`:
-
-1. **Scaffold** — folders, `.gitignore`, `requirements.txt`, YAML configs, placeholders
-2. **Ingest + preprocess + detect + track** — modular stage implementations
-3. **Count + aggregate + export + pipeline** — full Phase 1 orchestration
-4. **CLI + tests + Phase stubs** — `run_on_video.py`, pytest, Phase 2–4 stubs
-5. **Docs** — `README.md` + this technical design document
+Phase 1 commits (scaffold → modules → pipeline → CLI/tests → docs → counting harden), then Phase 2–4 commits (train+taxonomy, RTSP+dashboard, ONNX/TRT+docs).
 
 ---
 
 ## 13. How to extend safely
 
-- **New lane:** add YAML entry only; restart run.
-- **New export column:** change `exporter.COLUMNS` + `_bucket_to_rows`.
-- **New detector backend:** subclass / replace `Detector`, keep `predict(frame) -> list[Detection]`.
-- **Custom classes:** only after real labels + fine-tune (Phase 2).
+- **New lane:** YAML only.
+- **New export column:** `exporter.COLUMNS` + `_bucket_to_rows`.
+- **New detector backend:** implement `BaseDetector.predict`, register in `create_detector`.
+- **Custom classes:** label → `train.py` → `classes.mode: custom`.
 
 ---
 
-*Document version: Phase 1 MVP — aligned with package version `0.1.0`.*
+*Document version: Phases 1–4 complete in code — package `0.2.0`.*
