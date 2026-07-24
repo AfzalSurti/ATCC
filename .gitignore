@@ -32,6 +32,8 @@ data/sample_videos/*
 !data/sample_videos/.gitkeep
 data/datasets/*
 !data/datasets/.gitkeep
+data/uploads/*
+!data/uploads/.gitkeep
 outputs/reports/*
 !outputs/reports/.gitkeep
 outputs/annotated/*
@@ -40,6 +42,10 @@ outputs/models/*
 !outputs/models/.gitkeep
 runs/
 ultralytics/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
 
 # Env / secrets
 .env
