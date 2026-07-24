@@ -9,26 +9,17 @@ native class IDs through instead.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 from ultralytics import YOLO
 
 from src.config_loader import resolve_path
+from src.schemas import Detection
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class Detection:
-    """Standardized detection object returned by the detector."""
-
-    bbox: tuple[float, float, float, float]  # x1, y1, x2, y2
-    class_id: int
-    class_name: str
-    confidence: float
-    track_id: int | None = None
+__all__ = ["Detection", "Detector", "TensorRTDetector", "map_coco_to_target"]
 
 
 # ---------------------------------------------------------------------------
@@ -44,8 +35,6 @@ COCO_ID_TO_NAME: dict[int, str] = {
     7: "truck",
 }
 
-# Identity mapping for Phase 1: COCO names == target report names.
-# Kept as an explicit function so Phase 2 can replace it in one place.
 COCO_TO_TARGET_NAME: dict[str, str] = {
     "bicycle": "bicycle",
     "motorcycle": "motorcycle",
@@ -69,7 +58,6 @@ def map_coco_to_target(coco_class_id: int, coco_class_name: str) -> tuple[int, s
         ``(target_class_id, target_class_name)`` for counting / Excel export.
     """
     name = COCO_TO_TARGET_NAME.get(coco_class_name, coco_class_name)
-    # Stable local IDs for target names (order matches config classes.target).
     target_order = ["bicycle", "motorcycle", "car", "bus", "truck"]
     try:
         target_id = target_order.index(name)
@@ -95,7 +83,6 @@ class Detector:
         class_cfg = config.get("classes", {})
 
         model_path = str(det_cfg.get("model_path", "yolov8n.pt"))
-        # Allow bare weight names (ultralytics downloads) or project-relative paths.
         resolved = resolve_path(model_path)
         load_path = str(resolved) if resolved.is_file() else model_path
 
@@ -164,9 +151,6 @@ class Detector:
         return detections
 
 
-# ---------------------------------------------------------------------------
-# Phase 4 stub — edge / TensorRT backend swap
-# ---------------------------------------------------------------------------
 class TensorRTDetector(Detector):
     """Phase 4 stub: TensorRT-backed detector with the same ``predict`` interface.
 

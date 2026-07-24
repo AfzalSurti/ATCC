@@ -82,6 +82,7 @@ Orchestration lives in `src/pipeline.py` (`Pipeline.run()`).
 | `config/camera_config.yaml` | Single runtime source of truth |
 | `configs_examples/sample_lanes.yaml` | Example multi-lane geometry |
 | `src/config_loader.py` | YAML load + path resolution vs project root |
+| `src/schemas.py` | Shared `Detection` / `CountEvent` dataclasses (no heavy ML imports) |
 | `src/video_source.py` | File capture + FPS sampling → `FramePacket` |
 | `src/preprocessing.py` | ROI mask, CLAHE, optional motion skip |
 | `src/detector.py` | Ultralytics YOLO wrapper + COCO mapping |
@@ -180,11 +181,11 @@ Each lane in YAML:
   line: [[x1,y1],[x2,y2]]
 ```
 
-becomes a `supervision.LineZone`. On each frame we:
+Counting uses per-track **centroid path × counting-line segment intersection**,
+with `supervision.LineZone` objects retained for annotated-video display.
+(`LineZone.trigger` is avoided as the sole counting path because it breaks on
+NumPy 2.x `np.cross` changes; requirements pin `numpy==1.26.4`.)
 
-1. Convert tracked detections to `sv.Detections` (including `tracker_id`).
-2. Call `line_zone.trigger(...)`.
-3. For newly crossed track IDs **not** in `counted_track_ids`, emit one `CountEvent` and add the id to the set.
 
 Dedup set survives interval rollover (a vehicle already counted must not be counted again in the next 15-minute sheet if it still intersects the line). Per-lane class tallies for the *current window* are cleared on rollover via `reset_window_counts()`.
 

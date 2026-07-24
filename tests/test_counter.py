@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from src.counter import LaneCounter
-from src.detector import Detection
+from src.schemas import Detection
 
 
 def _config() -> dict:

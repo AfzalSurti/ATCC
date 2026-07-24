@@ -14,9 +14,10 @@ import supervision as sv
 from src.aggregator import Aggregator, IntervalBucket
 from src.config_loader import load_config, resolve_path
 from src.counter import LaneCounter
-from src.detector import Detection, Detector
+from src.detector import Detector
 from src.exporter import ExcelExporter
 from src.preprocessing import FramePreprocessor
+from src.schemas import Detection
 from src.tracker import Tracker
 from src.video_source import FramePacket, VideoSource
 
@@ -99,8 +100,20 @@ class Pipeline:
             canvas = label_annotator.annotate(canvas, sv_dets, labels=labels)
 
         for lane in self.counter.lanes:
-            line_annotator = sv.LineZoneAnnotator()
-            canvas = line_annotator.annotate(canvas, line_counter=lane.line_zone)
+            x1, y1 = map(int, lane.line_start)
+            x2, y2 = map(int, lane.line_end)
+            cv2.line(canvas, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            mid = ((x1 + x2) // 2, (y1 + y2) // 2)
+            cv2.putText(
+                canvas,
+                f"{lane.name}:{lane.display_count}",
+                mid,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
 
         cv2.putText(
             canvas,

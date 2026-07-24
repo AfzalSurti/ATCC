@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from src.aggregator import Aggregator, IntervalBucket
-from src.counter import CountEvent
+from src.schemas import CountEvent
 
 
 def _event(class_name: str = "car", lane: str = "lane_1") -> CountEvent:

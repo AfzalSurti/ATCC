@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 import supervision as sv
 
-from src.detector import Detection
+from src.schemas import Detection
 
 logger = logging.getLogger(__name__)
 

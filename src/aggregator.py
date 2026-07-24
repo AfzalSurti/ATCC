@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from src.counter import CountEvent
+from src.schemas import CountEvent
 
 logger = logging.getLogger(__name__)
 

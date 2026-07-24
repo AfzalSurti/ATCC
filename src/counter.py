@@ -1,7 +1,10 @@
 """Per-lane line-crossing counters with track_id deduplication.
 
-Uses supervision ``LineZone`` for each configured lane. A vehicle is counted
-once when its track centroid crosses the line.
+Uses supervision geometry types and LineZone objects (for annotation /
+in-out display). Crossing detection uses per-track centroid history with
+segment intersection so counting stays correct across NumPy versions
+(supervision LineZone.trigger relies on np.cross 2D behaviour removed in
+NumPy 2+).
 """
 
 from __future__ import annotations
@@ -13,32 +16,64 @@ from typing import Any, Callable
 import numpy as np
 import supervision as sv
 
-from src.detector import Detection
+from src.schemas import CountEvent, Detection
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class CountEvent:
-    """A single counted vehicle crossing."""
+def _segments_intersect(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    q1: tuple[float, float],
+    q2: tuple[float, float],
+) -> bool:
+    """Return True if segment p1→p2 intersects segment q1→q2."""
 
-    track_id: int
-    lane: str
-    direction: str
-    class_name: str
-    class_id: int
+    def orient(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float:
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+    def on_segment(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> bool:
+        return (
+            min(a[0], b[0]) <= c[0] <= max(a[0], b[0])
+            and min(a[1], b[1]) <= c[1] <= max(a[1], b[1])
+        )
+
+    o1 = orient(p1, p2, q1)
+    o2 = orient(p1, p2, q2)
+    o3 = orient(q1, q2, p1)
+    o4 = orient(q1, q2, p2)
+
+    if o1 * o2 < 0 and o3 * o4 < 0:
+        return True
+    if o1 == 0 and on_segment(p1, p2, q1):
+        return True
+    if o2 == 0 and on_segment(p1, p2, q2):
+        return True
+    if o3 == 0 and on_segment(q1, q2, p1):
+        return True
+    if o4 == 0 and on_segment(q1, q2, p2):
+        return True
+    return False
+
+
+def _centroid(bbox: tuple[float, float, float, float]) -> tuple[float, float]:
+    """Return the center of an xyxy bbox."""
+    x1, y1, x2, y2 = bbox
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
 
 @dataclass
 class LaneState:
-    """Runtime state for one lane's LineZone and dedupe set."""
+    """Runtime state for one lane's counting line and dedupe set."""
 
     name: str
     direction: str
-    line_zone: sv.LineZone
+    line_start: tuple[float, float]
+    line_end: tuple[float, float]
+    line_zone: sv.LineZone  # kept for visualization annotators
     counted_track_ids: set[int] = field(default_factory=set)
-    # class_name -> count within the current aggregator window (local mirror)
     counts: dict[str, int] = field(default_factory=dict)
+    display_count: int = 0
 
 
 class LaneCounter:
@@ -49,7 +84,7 @@ class LaneCounter:
         config: dict[str, Any],
         on_count: Callable[[CountEvent], None] | None = None,
     ) -> None:
-        """Build LineZones from ``lanes`` in config.
+        """Build counting lines from ``lanes`` in config.
 
         Args:
             config: Full pipeline config.
@@ -57,6 +92,7 @@ class LaneCounter:
         """
         self.on_count = on_count
         self.lanes: list[LaneState] = []
+        self._last_centroid: dict[int, tuple[float, float]] = {}
         self._class_names: list[str] = list(
             config.get("classes", {}).get(
                 "target", ["bicycle", "motorcycle", "car", "bus", "truck"]
@@ -70,10 +106,20 @@ class LaneCounter:
             if len(line) != 2:
                 raise ValueError(f"Lane {name}: line must be [[x1,y1],[x2,y2]]")
 
-            start = sv.Point(float(line[0][0]), float(line[0][1]))
-            end = sv.Point(float(line[1][0]), float(line[1][1]))
+            start_xy = (float(line[0][0]), float(line[0][1]))
+            end_xy = (float(line[1][0]), float(line[1][1]))
+            start = sv.Point(start_xy[0], start_xy[1])
+            end = sv.Point(end_xy[0], end_xy[1])
             line_zone = sv.LineZone(start=start, end=end)
-            self.lanes.append(LaneState(name=name, direction=direction, line_zone=line_zone))
+            self.lanes.append(
+                LaneState(
+                    name=name,
+                    direction=direction,
+                    line_start=start_xy,
+                    line_end=end_xy,
+                    line_zone=line_zone,
+                )
+            )
             logger.info("Lane %s (%s) line %s → %s", name, direction, line[0], line[1])
 
     def reset_window_counts(self) -> None:
@@ -86,7 +132,10 @@ class LaneCounter:
             lane.counts.clear()
 
     def update(self, detections: list[Detection]) -> list[CountEvent]:
-        """Update all lane LineZones; return newly counted events.
+        """Update all lanes; return newly counted crossing events.
+
+        A vehicle is counted once when its track centroid path intersects the
+        lane line, deduped by ``track_id``.
 
         Args:
             detections: Tracked detections (must include ``track_id``).
@@ -95,66 +144,30 @@ class LaneCounter:
             List of new ``CountEvent`` objects for this frame.
         """
         events: list[CountEvent] = []
-        if not detections:
-            # Still tick empty detections so LineZone state ages out correctly.
-            empty = sv.Detections.empty()
+        seen_this_frame: set[int] = set()
+
+        for det in detections:
+            if det.track_id is None:
+                continue
+            tid = det.track_id
+            seen_this_frame.add(tid)
+            curr = _centroid(det.bbox)
+            prev = self._last_centroid.get(tid)
+            self._last_centroid[tid] = curr
+
+            if prev is None:
+                continue
+
             for lane in self.lanes:
-                lane.line_zone.trigger(empty)
-            return events
-
-        xyxy = np.array([list(d.bbox) for d in detections], dtype=np.float32)
-        tracker_id = np.array([d.track_id if d.track_id is not None else -1 for d in detections], dtype=int)
-        class_id = np.array([d.class_id for d in detections], dtype=int)
-        confidence = np.array([d.confidence for d in detections], dtype=np.float32)
-
-        sv_dets = sv.Detections(
-            xyxy=xyxy,
-            confidence=confidence,
-            class_id=class_id,
-            tracker_id=tracker_id,
-        )
-
-        # Map track_id → Detection for class name lookup after trigger.
-        by_track = {d.track_id: d for d in detections if d.track_id is not None}
-
-        for lane in self.lanes:
-            before_in = int(lane.line_zone.in_count)
-            before_out = int(lane.line_zone.out_count)
-            crossed_in, crossed_out = lane.line_zone.trigger(sv_dets)
-            after_in = int(lane.line_zone.in_count)
-            after_out = int(lane.line_zone.out_count)
-
-            # Prefer mask-based crossed tracks when available.
-            crossed_masks = []
-            if isinstance(crossed_in, np.ndarray):
-                crossed_masks.append(crossed_in)
-            if isinstance(crossed_out, np.ndarray):
-                crossed_masks.append(crossed_out)
-
-            newly_crossed_ids: set[int] = set()
-            if crossed_masks:
-                combined = np.zeros(len(sv_dets), dtype=bool)
-                for m in crossed_masks:
-                    if m.shape[0] == combined.shape[0]:
-                        combined |= m.astype(bool)
-                for i, flag in enumerate(combined):
-                    if flag and tracker_id[i] >= 0:
-                        newly_crossed_ids.add(int(tracker_id[i]))
-            elif (after_in + after_out) > (before_in + before_out):
-                # Fallback: if masks unavailable, attribute to detections present this frame
-                # that have not yet been counted on this lane (best-effort).
-                for d in detections:
-                    if d.track_id is not None and d.track_id not in lane.counted_track_ids:
-                        newly_crossed_ids.add(d.track_id)
-
-            for tid in newly_crossed_ids:
                 if tid in lane.counted_track_ids:
                     continue
-                det = by_track.get(tid)
-                if det is None:
+                if not _segments_intersect(prev, curr, lane.line_start, lane.line_end):
                     continue
+
                 lane.counted_track_ids.add(tid)
                 lane.counts[det.class_name] = lane.counts.get(det.class_name, 0) + 1
+                lane.display_count += 1
+
                 event = CountEvent(
                     track_id=tid,
                     lane=lane.name,
@@ -172,6 +185,12 @@ class LaneCounter:
                 )
                 if self.on_count is not None:
                     self.on_count(event)
+
+        # Drop centroids for tracks no longer visible (avoid stale jumps).
+        stale = [tid for tid in self._last_centroid if tid not in seen_this_frame]
+        for tid in stale:
+            # Keep briefly? For MVP drop immediately when absent from frame.
+            del self._last_centroid[tid]
 
         return events
 
