@@ -1,0 +1,52 @@
+# Example lane geometry for a typical dual-carriageway overhead camera.
+# Copy values into config/camera_config.yaml after calibrating against your video.
+
+source:
+  type: file
+  path: "data/sample_videos/sample1.mp4"
+
+frame_sampling:
+  target_fps: 12
+
+roi:
+  enabled: true
+  # Rough road polygon — replace with your camera's road area
+  polygon:
+    - [50, 250]
+    - [1870, 250]
+    - [1910, 1050]
+    - [20, 1050]
+
+lanes:
+  - name: "lane_1_northbound"
+    direction: "north"
+    line: [[100, 550], [500, 550]]
+  - name: "lane_2_northbound"
+    direction: "north"
+    line: [[520, 550], [900, 550]]
+  - name: "lane_3_southbound"
+    direction: "south"
+    line: [[980, 550], [1360, 550]]
+  - name: "lane_4_southbound"
+    direction: "south"
+    line: [[1380, 550], [1800, 550]]
+
+detection:
+  model_path: "yolov8n.pt"
+  confidence_threshold: 0.4
+  iou_threshold: 0.5
+
+classes:
+  target:
+    - bicycle
+    - motorcycle
+    - car
+    - bus
+    - truck
+  coco_vehicle_ids: [1, 2, 3, 5, 7]
+
+export:
+  interval_minutes: 15
+  output_dir: "outputs/reports"
+  mode: append
+  sheet_strategy: single

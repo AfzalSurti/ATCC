@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Model weights (downloaded at runtime)
+*.pt
+*.onnx
+*.engine
+!docs/**
+
+# Data & outputs (large / generated)
+data/sample_videos/*
+!data/sample_videos/.gitkeep
+outputs/reports/*
+!outputs/reports/.gitkeep
+outputs/annotated/*
+!outputs/annotated/.gitkeep
+runs/
+ultralytics/
+
+# Env / secrets
+.env
+.env.*
+*.log
