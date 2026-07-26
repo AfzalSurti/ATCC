@@ -1,4 +1,4 @@
-"""Excel report writer for interval-bucketed ATCC counts."""
+"""Excel report writer for interval-bucketed ATCC junction counts."""
 
 from __future__ import annotations
 
@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 COLUMNS = [
     "Interval Start",
     "Interval End",
-    "Lane",
-    "Direction",
+    "Junction Type",
+    "Arm",
+    "Flow",
+    "Movement",
     "Vehicle Class",
     "Count",
 ]
@@ -28,28 +30,29 @@ class ExcelExporter:
     """Write / append ATCC count rows to an ``.xlsx`` workbook."""
 
     def __init__(self, config: dict[str, Any], session_id: str | None = None) -> None:
-        """Configure output path and write mode from export settings.
-
-        Args:
-            config: Full pipeline config.
-            session_id: Optional suffix for session-mode filenames.
-        """
+        """Configure output path and write mode from export settings."""
         export_cfg = config.get("export", {})
         self.mode: str = str(export_cfg.get("mode", "append")).lower()
         self.sheet_strategy: str = str(export_cfg.get("sheet_strategy", "single")).lower()
         self.output_dir: Path = resolve_path(str(export_cfg.get("output_dir", "outputs/reports")))
         self.filename_prefix: str = str(export_cfg.get("filename_prefix", "atcc_report"))
+        self.junction_type: str = str((config.get("junction") or {}).get("type", ""))
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         if self.mode == "session":
             self.workbook_path = self.output_dir / f"{self.filename_prefix}_{self.session_id}.xlsx"
         else:
-            # append mode: stable running report per calendar day
             day = datetime.now().strftime("%Y%m%d")
             self.workbook_path = self.output_dir / f"{self.filename_prefix}_{day}.xlsx"
 
-        logger.info("ExcelExporter ready → %s (mode=%s, sheets=%s)", self.workbook_path, self.mode, self.sheet_strategy)
+        logger.info(
+            "ExcelExporter ready → %s (mode=%s, sheets=%s, junction=%s)",
+            self.workbook_path,
+            self.mode,
+            self.sheet_strategy,
+            self.junction_type or "legacy",
+        )
 
     def _sheet_name(self, bucket: IntervalBucket) -> str:
         """Choose worksheet name based on sheet strategy."""
@@ -57,32 +60,43 @@ class ExcelExporter:
             return bucket.interval_start.strftime("%Y-%m-%d")
         return "counts"
 
+    def _parse_movement(self, movement_id: str, flow: str) -> tuple[str, str, str]:
+        """Derive arm/flow/movement display fields from a movement id."""
+        if "_" in movement_id and movement_id.rsplit("_", 1)[-1] in {"in", "out"}:
+            arm, fl = movement_id.rsplit("_", 1)
+            return arm, fl, movement_id
+        return movement_id, flow, movement_id
+
     def _bucket_to_rows(self, bucket: IntervalBucket) -> list[dict[str, Any]]:
         """Flatten a bucket into row dictionaries matching ``COLUMNS``."""
         start = bucket.interval_start.isoformat()
         end = bucket.interval_end.isoformat()
         rows: list[dict[str, Any]] = []
         if not bucket.counts:
-            # Emit a zero-activity marker row so the interval appears in the report.
             rows.append(
                 {
                     "Interval Start": start,
                     "Interval End": end,
-                    "Lane": "",
-                    "Direction": "",
+                    "Junction Type": self.junction_type,
+                    "Arm": "",
+                    "Flow": "",
+                    "Movement": "",
                     "Vehicle Class": "",
                     "Count": 0,
                 }
             )
             return rows
 
-        for (lane, direction, class_name), count in sorted(bucket.counts.items()):
+        for (movement_id, flow, class_name), count in sorted(bucket.counts.items()):
+            arm, fl, mid = self._parse_movement(str(movement_id), str(flow))
             rows.append(
                 {
                     "Interval Start": start,
                     "Interval End": end,
-                    "Lane": lane,
-                    "Direction": direction,
+                    "Junction Type": self.junction_type,
+                    "Arm": arm,
+                    "Flow": fl,
+                    "Movement": mid,
                     "Vehicle Class": class_name,
                     "Count": int(count),
                 }
@@ -90,14 +104,7 @@ class ExcelExporter:
         return rows
 
     def write_bucket(self, bucket: IntervalBucket) -> Path:
-        """Append (or create) rows for a completed interval bucket.
-
-        Args:
-            bucket: Aggregated counts for one time window.
-
-        Returns:
-            Path to the workbook written.
-        """
+        """Append (or create) rows for a completed interval bucket."""
         new_df = pd.DataFrame(self._bucket_to_rows(bucket), columns=COLUMNS)
         sheet = self._sheet_name(bucket)
 

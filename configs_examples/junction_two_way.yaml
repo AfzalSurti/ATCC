@@ -1,0 +1,8 @@
+# 2-way corridor: only 2 movements (incoming + outgoing).
+junction:
+  type: two_way
+  arms:
+    - name: corridor
+      label: "Main road"
+      in_line: [[200, 400], [900, 400]]
+      out_line: [[200, 480], [900, 480]]

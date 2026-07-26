@@ -11,9 +11,10 @@ def _config() -> dict:
         "classes": {"target": ["car", "bus", "truck", "motorcycle", "bicycle"]},
         "lanes": [
             {
-                "name": "lane_1",
-                "direction": "north",
-                # Horizontal line across mid frame
+                "name": "north_in",
+                "arm": "north",
+                "flow": "in",
+                "direction": "in",
                 "line": [[0, 100], [200, 100]],
             }
         ],
@@ -35,16 +36,16 @@ def _det(track_id: int, cx: float, cy: float, class_name: str = "car") -> Detect
 def test_same_track_counted_once_when_crossing() -> None:
     """A single track crossing the line must produce exactly one count event."""
     counter = LaneCounter(_config())
-    # Approach from above the line, then cross below.
     events_1 = counter.update([_det(1, 100, 60)])
     events_2 = counter.update([_det(1, 100, 140)])
     all_events = events_1 + events_2
     assert len(all_events) == 1
     assert all_events[0].track_id == 1
-    assert all_events[0].lane == "lane_1"
+    assert all_events[0].movement_id == "north_in"
+    assert all_events[0].arm == "north"
+    assert all_events[0].flow == "in"
     assert all_events[0].class_name == "car"
 
-    # Same track lingering / oscillating must not recount.
     events_3 = counter.update([_det(1, 100, 150)])
     events_4 = counter.update([_det(1, 100, 90)])
     events_5 = counter.update([_det(1, 100, 160)])
@@ -64,12 +65,12 @@ def test_different_tracks_counted_separately() -> None:
 
 
 def test_snapshot_counts_by_class() -> None:
-    """Per-lane class tallies should reflect counted events."""
+    """Per-movement class tallies should reflect counted events."""
     counter = LaneCounter(_config())
     counter.update([_det(1, 100, 50, "car")])
     counter.update([_det(1, 100, 150, "car")])
     counter.update([_det(2, 100, 50, "bus")])
     counter.update([_det(2, 100, 150, "bus")])
     snap = counter.snapshot_counts()
-    assert snap[("lane_1", "north", "car")] == 1
-    assert snap[("lane_1", "north", "bus")] == 1
+    assert snap[("north_in", "in", "car")] == 1
+    assert snap[("north_in", "in", "bus")] == 1

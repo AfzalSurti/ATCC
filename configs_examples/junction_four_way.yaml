@@ -1,0 +1,20 @@
+# 4-way crossroads: 4 arms × IN+OUT = 8 movements.
+junction:
+  type: four_way
+  arms:
+    - name: north
+      label: "North"
+      in_line: [[420, 180], [700, 180]]
+      out_line: [[420, 220], [700, 220]]
+    - name: east
+      label: "East"
+      in_line: [[980, 360], [1180, 560]]
+      out_line: [[940, 360], [1140, 560]]
+    - name: south
+      label: "South"
+      in_line: [[420, 820], [700, 820]]
+      out_line: [[420, 780], [700, 780]]
+    - name: west
+      label: "West"
+      in_line: [[80, 360], [280, 560]]
+      out_line: [[120, 360], [320, 560]]

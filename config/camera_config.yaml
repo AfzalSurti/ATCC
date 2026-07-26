@@ -1,23 +1,17 @@
 # ATCC camera / pipeline configuration
-# All runtime paths and thresholds live here (no hardcoded paths in code).
+# Calibrate junction arm lines to your camera pixel coordinates.
 
 source:
-  # "file" | "rtsp" | "webcam" (webcam: set path to "0")
   type: file
   path: "data/sample_videos/sample1.mp4"
-  # Live-only options (Phase 3):
-  # url: "rtsp://user:pass@192.168.1.10:554/stream1"
   reconnect_seconds: 3
   read_timeout_ms: 5000
-  max_reconnects: 0  # 0 = unlimited
+  max_reconnects: 0
 
 frame_sampling:
-  # Process at ~this FPS regardless of source FPS (every Nth frame derived from source FPS).
   target_fps: 12
 
 roi:
-  # Empty polygon = full frame. Example road ROI (pixel coords of source video):
-  # polygon: [[100, 200], [1800, 200], [1900, 1000], [50, 1000]]
   enabled: false
   polygon: []
 
@@ -31,27 +25,49 @@ preprocessing:
     enabled: false
     min_diff_ratio: 0.01
 
-lanes:
-  - name: "lane_1_northbound"
-    direction: "north"
-    line: [[200, 400], [600, 400]]
-  - name: "lane_2_southbound"
-    direction: "south"
-    line: [[700, 400], [1100, 400]]
+# ---------------------------------------------------------------------------
+# Junction model
+#   two_way   → 2 movements  (incoming + outgoing)
+#   three_way → 6 movements  (3 arms × IN + OUT)
+#   four_way  → 8 movements  (4 arms × IN + OUT)
+#
+# IN  = entering the junction from that arm
+# OUT = leaving the junction toward that arm
+# Replace placeholder line coords with your video's pixel positions.
+# ---------------------------------------------------------------------------
+junction:
+  type: four_way
+  arms:
+    - name: north
+      label: "North approach"
+      in_line: [[420, 180], [700, 180]]
+      out_line: [[420, 220], [700, 220]]
+    - name: east
+      label: "East approach"
+      in_line: [[980, 360], [1180, 560]]
+      out_line: [[940, 360], [1140, 560]]
+    - name: south
+      label: "South approach"
+      in_line: [[420, 820], [700, 820]]
+      out_line: [[420, 780], [700, 780]]
+    - name: west
+      label: "West approach"
+      in_line: [[80, 360], [280, 560]]
+      out_line: [[120, 360], [320, 560]]
+
+# Legacy flat lanes (ignored when junction: is present). Kept as reference only.
+# lanes: []
 
 detection:
-  # backend: ultralytics | onnx | tensorrt
   backend: ultralytics
   model_path: "yolov8n.pt"
-  # onnx_path: "outputs/models/yolov8n.onnx"
-  # engine_path: "outputs/models/yolov8n.engine"
   confidence_threshold: 0.4
   iou_threshold: 0.5
-  device: ""  # "" = auto (CUDA if available), or "cpu" / "0"
+  device: ""
 
-# Single source of truth for vehicle class taxonomy.
-# mode: coco_mapped  → Phase 1 pretrained COCO placeholder mapping
-# mode: custom       → Phase 2 fine-tuned model; names come from target[] order
+# Report classes from COCO Phase-1 mapping (bicycle, motorcycle, car, bus, truck).
+# Primary categories requested for ATCC reports: bicycle / car / truck
+# (+ motorcycle, bus retained from the detector).
 classes:
   mode: coco_mapped
   target:
@@ -61,12 +77,6 @@ classes:
     - bus
     - truck
   coco_vehicle_ids: [1, 2, 3, 5, 7]
-  # After Phase 2 training, switch to:
-  # mode: custom
-  # target:  # must match config/india_classes.yaml / data.yaml order
-  #   - two_wheeler
-  #   - three_wheeler_auto
-  #   - ...
 
 tracking:
   track_activation_threshold: 0.25
@@ -84,7 +94,7 @@ export:
 visualization:
   enabled: true
   output_dir: "outputs/annotated"
-  publish_stats: true  # feed Streamlit dashboard via StatsStore
+  publish_stats: true
 
 logging:
   level: INFO

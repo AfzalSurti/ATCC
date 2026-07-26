@@ -22,8 +22,8 @@ class IntervalBucket:
     counts: dict[tuple[str, str, str], int] = field(default_factory=dict)
 
     def add(self, event: CountEvent) -> None:
-        """Increment the count for an event's lane/direction/class."""
-        key = (event.lane, event.direction, event.class_name)
+        """Increment the count for an event's movement/flow/class."""
+        key = (event.movement_id or event.lane, event.flow or event.direction, event.class_name)
         self.counts[key] = self.counts.get(key, 0) + 1
 
     def is_empty(self) -> bool:

@@ -15,7 +15,7 @@ import re
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from api.jobs import MANAGER
+from src.junction import describe_junction_types, expected_movements
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,14 +64,26 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/junction-types")
+def junction_types() -> dict:
+    """Describe 2-way / 3-way / 4-way movement models for the UI."""
+    return {"types": describe_junction_types()}
+
+
 @app.post("/api/upload")
-async def upload_videos(files: list[UploadFile] = File(...)) -> dict:
-    """Accept one or more video uploads and start a processing job."""
+async def upload_videos(
+    files: list[UploadFile] = File(...),
+    junction_type: str = Form("four_way"),
+) -> dict:
+    """Accept one or more video uploads and start a processing job.
+
+    Form fields:
+      - files: one or many video files
+      - junction_type: two_way | three_way | four_way
+    """
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
-    job_dir = MANAGER.upload_root / f"pending_{id(files)}"
-    # Create job id folder after we know job id — save under temp then move.
     saved: list[tuple[str, Path]] = []
     staging = MANAGER.upload_root / f"tmp_{Path(files[0].filename or 'x').stem}_{len(files)}"
     staging.mkdir(parents=True, exist_ok=True)
@@ -86,7 +99,6 @@ async def upload_videos(files: list[UploadFile] = File(...)) -> dict:
                 )
             safe = _safe_name(original)
             dest = staging / safe
-            # Avoid overwrite collisions within the same batch
             if dest.exists():
                 dest = staging / f"{dest.stem}_{len(saved)}{dest.suffix}"
             data = await upload.read()
@@ -100,8 +112,11 @@ async def upload_videos(files: list[UploadFile] = File(...)) -> dict:
         logger.exception("Upload failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    job = MANAGER.create_job(saved)
-    # Move staging folder under job id for clarity
+    try:
+        job = MANAGER.create_job(saved, junction_type=junction_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     final_dir = MANAGER.upload_root / job.job_id
     if staging.resolve() != final_dir.resolve():
         staging.rename(final_dir)
@@ -109,7 +124,13 @@ async def upload_videos(files: list[UploadFile] = File(...)) -> dict:
             video.path = str(final_dir / Path(video.path).name)
 
     MANAGER.start_job(job.job_id)
-    logger.info("Started job %s with %d video(s)", job.job_id, len(job.videos))
+    logger.info(
+        "Started job %s (%s, %d movements) with %d video(s)",
+        job.job_id,
+        job.junction_type,
+        expected_movements(job.junction_type),
+        len(job.videos),
+    )
     return MANAGER.job_to_dict(job)
 
 

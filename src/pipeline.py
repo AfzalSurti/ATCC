@@ -127,10 +127,10 @@ class Pipeline:
             mid = ((x1 + x2) // 2, (y1 + y2) // 2)
             cv2.putText(
                 canvas,
-                f"{lane.name}:{lane.display_count}",
+                f"{lane.label}:{lane.display_count}",
                 mid,
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
+                0.55,
                 (0, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -231,6 +231,9 @@ class Pipeline:
             self.stats.push_event(
                 {
                     "track_id": event.track_id,
+                    "movement": event.movement_id,
+                    "arm": event.arm,
+                    "flow": event.flow,
                     "lane": event.lane,
                     "direction": event.direction,
                     "class": event.class_name,

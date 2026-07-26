@@ -1,10 +1,7 @@
-"""Per-lane line-crossing counters with track_id deduplication.
+"""Per-movement line-crossing counters with track_id deduplication.
 
-Uses supervision geometry types and LineZone objects (for annotation /
-in-out display). Crossing detection uses per-track centroid history with
-segment intersection so counting stays correct across NumPy versions
-(supervision LineZone.trigger relies on np.cross 2D behaviour removed in
-NumPy 2+).
+Supports junction models (2 / 6 / 8 ways) via ``src.junction``, and legacy
+flat ``lanes`` lists for backward compatibility.
 """
 
 from __future__ import annotations
@@ -13,9 +10,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import numpy as np
 import supervision as sv
 
+from src.junction import junction_to_lane_configs
 from src.schemas import CountEvent, Detection
 
 logger = logging.getLogger(__name__)
@@ -64,27 +61,30 @@ def _centroid(bbox: tuple[float, float, float, float]) -> tuple[float, float]:
 
 @dataclass
 class LaneState:
-    """Runtime state for one lane's counting line and dedupe set."""
+    """Runtime state for one movement counting line and dedupe set."""
 
     name: str
     direction: str
+    arm: str
+    flow: str
+    label: str
     line_start: tuple[float, float]
     line_end: tuple[float, float]
-    line_zone: sv.LineZone  # kept for visualization annotators
+    line_zone: sv.LineZone
     counted_track_ids: set[int] = field(default_factory=set)
     counts: dict[str, int] = field(default_factory=dict)
     display_count: int = 0
 
 
 class LaneCounter:
-    """Count vehicles per lane / direction / class using line crossings."""
+    """Count vehicles per junction movement / class using line crossings."""
 
     def __init__(
         self,
         config: dict[str, Any],
         on_count: Callable[[CountEvent], None] | None = None,
     ) -> None:
-        """Build counting lines from ``lanes`` in config.
+        """Build counting lines from ``junction`` or legacy ``lanes``.
 
         Args:
             config: Full pipeline config.
@@ -93,18 +93,20 @@ class LaneCounter:
         self.on_count = on_count
         self.lanes: list[LaneState] = []
         self._last_centroid: dict[int, tuple[float, float]] = {}
-        self._class_names: list[str] = list(
-            config.get("classes", {}).get(
-                "target", ["bicycle", "motorcycle", "car", "bus", "truck"]
-            )
-        )
+        self.junction_type: str = str((config.get("junction") or {}).get("type", "legacy"))
 
-        for lane_cfg in config.get("lanes", []):
+        lane_cfgs = junction_to_lane_configs(config)
+        if not lane_cfgs:
+            raise ValueError("No junction movements / lanes configured")
+
+        for lane_cfg in lane_cfgs:
             name = str(lane_cfg["name"])
-            direction = str(lane_cfg.get("direction", "unknown"))
+            flow = str(lane_cfg.get("flow") or lane_cfg.get("direction") or "in")
+            arm = str(lane_cfg.get("arm") or name)
+            label = str(lane_cfg.get("label") or name)
             line = lane_cfg["line"]
             if len(line) != 2:
-                raise ValueError(f"Lane {name}: line must be [[x1,y1],[x2,y2]]")
+                raise ValueError(f"Movement {name}: line must be [[x1,y1],[x2,y2]]")
 
             start_xy = (float(line[0][0]), float(line[0][1]))
             end_xy = (float(line[1][0]), float(line[1][1]))
@@ -114,35 +116,31 @@ class LaneCounter:
             self.lanes.append(
                 LaneState(
                     name=name,
-                    direction=direction,
+                    direction=flow,
+                    arm=arm,
+                    flow=flow,
+                    label=label,
                     line_start=start_xy,
                     line_end=end_xy,
                     line_zone=line_zone,
                 )
             )
-            logger.info("Lane %s (%s) line %s → %s", name, direction, line[0], line[1])
+            logger.info(
+                "Movement %s | arm=%s flow=%s line %s → %s",
+                name,
+                arm,
+                flow,
+                line[0],
+                line[1],
+            )
 
     def reset_window_counts(self) -> None:
-        """Clear per-lane count mirrors after an aggregator interval rollover.
-
-        Deduped track IDs are retained so a vehicle already counted is not
-        double-counted in a later interval if it loiters on the line.
-        """
+        """Clear per-movement class tallies after an interval rollover."""
         for lane in self.lanes:
             lane.counts.clear()
 
     def update(self, detections: list[Detection]) -> list[CountEvent]:
-        """Update all lanes; return newly counted crossing events.
-
-        A vehicle is counted once when its track centroid path intersects the
-        lane line, deduped by ``track_id``.
-
-        Args:
-            detections: Tracked detections (must include ``track_id``).
-
-        Returns:
-            List of new ``CountEvent`` objects for this frame.
-        """
+        """Return newly counted crossing events for this frame."""
         events: list[CountEvent] = []
         seen_this_frame: set[int] = set()
 
@@ -170,34 +168,48 @@ class LaneCounter:
 
                 event = CountEvent(
                     track_id=tid,
-                    lane=lane.name,
-                    direction=lane.direction,
+                    movement_id=lane.name,
+                    arm=lane.arm,
+                    flow=lane.flow,
                     class_name=det.class_name,
                     class_id=det.class_id,
+                    lane=lane.name,
+                    direction=lane.flow,
                 )
                 events.append(event)
                 logger.debug(
-                    "COUNT track=%s lane=%s dir=%s class=%s",
+                    "COUNT track=%s movement=%s arm=%s flow=%s class=%s",
                     tid,
                     lane.name,
-                    lane.direction,
+                    lane.arm,
+                    lane.flow,
                     det.class_name,
                 )
                 if self.on_count is not None:
                     self.on_count(event)
 
-        # Drop centroids for tracks no longer visible (avoid stale jumps).
         stale = [tid for tid in self._last_centroid if tid not in seen_this_frame]
         for tid in stale:
-            # Keep briefly? For MVP drop immediately when absent from frame.
             del self._last_centroid[tid]
 
         return events
 
     def snapshot_counts(self) -> dict[tuple[str, str, str], int]:
-        """Return current window counts keyed by (lane, direction, class_name)."""
+        """Return counts keyed by (movement_id, flow, class_name)."""
         out: dict[tuple[str, str, str], int] = {}
         for lane in self.lanes:
             for class_name, count in lane.counts.items():
-                out[(lane.name, lane.direction, class_name)] = count
+                out[(lane.name, lane.flow, class_name)] = count
         return out
+
+    def movement_totals(self) -> dict[str, int]:
+        """Total vehicles per movement id (all classes)."""
+        return {lane.name: lane.display_count for lane in self.lanes}
+
+    def class_totals(self) -> dict[str, int]:
+        """Total vehicles per class across all movements."""
+        totals: dict[str, int] = {}
+        for lane in self.lanes:
+            for cls_name, n in lane.counts.items():
+                totals[cls_name] = totals.get(cls_name, 0) + n
+        return totals

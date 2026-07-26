@@ -22,10 +22,30 @@ class Detection:
 
 @dataclass
 class CountEvent:
-    """A single counted vehicle crossing a lane line."""
+    """A single counted vehicle crossing one junction movement line.
+
+    Attributes:
+        track_id: Persistent ByteTrack id (dedupe key per movement).
+        movement_id: Unique id e.g. ``north_in``.
+        arm: Approach name e.g. ``north``.
+        flow: ``in`` (entering junction) or ``out`` (leaving toward arm).
+        class_name: Vehicle class (bicycle / car / truck / …).
+        class_id: Numeric class id from the detector taxonomy.
+        lane: Alias of ``movement_id`` (legacy).
+        direction: Alias of ``flow`` (legacy).
+    """
 
     track_id: int
-    lane: str
-    direction: str
+    movement_id: str
+    arm: str
+    flow: str
     class_name: str
     class_id: int
+    lane: str = ""
+    direction: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.lane:
+            self.lane = self.movement_id
+        if not self.direction:
+            self.direction = self.flow

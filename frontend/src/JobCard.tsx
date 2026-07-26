@@ -14,7 +14,10 @@ export function JobCard({ job, onCancel, reportUrl }: Props) {
       <div className="job-head">
         <div className="meta">
           <strong>Job {job.job_id}</strong>
-          <span>{new Date(job.created_at).toLocaleString()} · {job.videos.length} video(s)</span>
+          <span>
+            {new Date(job.created_at).toLocaleString()} · {job.videos.length} video(s) ·{" "}
+            {job.junction_type} ({job.expected_movements} ways)
+          </span>
         </div>
         <div className="actions" style={{ marginTop: 0 }}>
           <span className={`badge ${job.status}`}>{job.status}</span>
@@ -33,8 +36,8 @@ export function JobCard({ job, onCancel, reportUrl }: Props) {
       <div className="video-grid">
         {job.videos.map((video) => {
           const url = reportUrl(video);
-          const lanes = Object.entries(video.lane_counts);
-          const classes = Object.entries(video.class_counts);
+          const movements = Object.entries(video.movement_counts || video.lane_counts || {});
+          const classes = Object.entries(video.class_counts || {});
           return (
             <div className="video-row" key={video.video_id}>
               <div className="video-row-top">
@@ -43,22 +46,22 @@ export function JobCard({ job, onCancel, reportUrl }: Props) {
               </div>
               <div className="counts">
                 <span>
-                  Counts <b>{video.total_events}</b>
+                  Total vehicles <b>{video.total_events}</b>
                 </span>
                 {video.error ? <span style={{ color: "var(--danger)" }}>{video.error}</span> : null}
               </div>
-              {(lanes.length > 0 || classes.length > 0) && (
+              {(movements.length > 0 || classes.length > 0) && (
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-                  {lanes.length > 0 ? (
+                  {movements.length > 0 ? (
                     <table className="mini-table">
                       <thead>
                         <tr>
-                          <th>Lane</th>
+                          <th>Movement (way)</th>
                           <th>Count</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {lanes.map(([k, v]) => (
+                        {movements.map(([k, v]) => (
                           <tr key={k}>
                             <td>{k}</td>
                             <td>{v}</td>
@@ -71,7 +74,7 @@ export function JobCard({ job, onCancel, reportUrl }: Props) {
                     <table className="mini-table">
                       <thead>
                         <tr>
-                          <th>Class</th>
+                          <th>Vehicle class</th>
                           <th>Count</th>
                         </tr>
                       </thead>

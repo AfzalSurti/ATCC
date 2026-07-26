@@ -1,4 +1,13 @@
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type JunctionType = "two_way" | "three_way" | "four_way";
+
+export interface JunctionTypeInfo {
+  id: JunctionType;
+  label: string;
+  arms: number;
+  movements: number;
+  description: string;
+}
 
 export interface VideoResult {
   video_id: string;
@@ -9,6 +18,7 @@ export interface VideoResult {
   annotated_path: string | null;
   error: string | null;
   lane_counts: Record<string, number>;
+  movement_counts: Record<string, number>;
   class_counts: Record<string, number>;
   report_url: string | null;
 }
@@ -19,6 +29,8 @@ export interface BatchJob {
   status: JobStatus;
   progress: number;
   error: string | null;
+  junction_type: JunctionType | string;
+  expected_movements: number;
   videos: VideoResult[];
 }
 
@@ -38,11 +50,18 @@ async function parseJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function uploadVideos(files: File[]): Promise<BatchJob> {
+export async function fetchJunctionTypes(): Promise<JunctionTypeInfo[]> {
+  const res = await fetch(`${API_BASE}/api/junction-types`);
+  const data = await parseJson<{ types: JunctionTypeInfo[] }>(res);
+  return data.types;
+}
+
+export async function uploadVideos(files: File[], junctionType: JunctionType): Promise<BatchJob> {
   const form = new FormData();
   for (const file of files) {
     form.append("files", file);
   }
+  form.append("junction_type", junctionType);
   const res = await fetch(`${API_BASE}/api/upload`, {
     method: "POST",
     body: form,

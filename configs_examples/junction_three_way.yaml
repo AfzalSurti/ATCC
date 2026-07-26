@@ -1,0 +1,16 @@
+# 3-way / T-junction: 3 arms × IN+OUT = 6 movements.
+junction:
+  type: three_way
+  arms:
+    - name: north
+      label: "North"
+      in_line: [[400, 160], [700, 160]]
+      out_line: [[400, 200], [700, 200]]
+    - name: east
+      label: "East"
+      in_line: [[980, 360], [1180, 560]]
+      out_line: [[940, 360], [1140, 560]]
+    - name: west
+      label: "West"
+      in_line: [[80, 360], [280, 560]]
+      out_line: [[120, 360], [320, 560]]

@@ -8,11 +8,13 @@ from src.aggregator import Aggregator, IntervalBucket
 from src.schemas import CountEvent
 
 
-def _event(class_name: str = "car", lane: str = "lane_1") -> CountEvent:
+def _event(class_name: str = "car", movement_id: str = "north_in") -> CountEvent:
+    arm, flow = movement_id.rsplit("_", 1)
     return CountEvent(
         track_id=1,
-        lane=lane,
-        direction="north",
+        movement_id=movement_id,
+        arm=arm,
+        flow=flow,
         class_name=class_name,
         class_id=0,
     )
@@ -32,11 +34,10 @@ def test_interval_rollover_invokes_callback() -> None:
     agg.add_event(_event("bus"), start + timedelta(minutes=14))
     assert completed == []
 
-    # Push past 15 minutes → first window closes.
     agg.observe_time(start + timedelta(minutes=15, seconds=1))
     assert len(completed) == 1
-    assert completed[0].counts[("lane_1", "north", "car")] == 1
-    assert completed[0].counts[("lane_1", "north", "bus")] == 1
+    assert completed[0].counts[("north_in", "in", "car")] == 1
+    assert completed[0].counts[("north_in", "in", "bus")] == 1
     assert completed[0].interval_start == start
     assert completed[0].interval_end == start + timedelta(minutes=15)
 
@@ -54,5 +55,5 @@ def test_flush_exports_partial_window() -> None:
     flushed = agg.flush()
     assert flushed is not None
     assert len(completed) == 1
-    assert completed[0].counts[("lane_1", "north", "truck")] == 1
-    assert agg.flush() is None  # second flush is a no-op
+    assert completed[0].counts[("north_in", "in", "truck")] == 1
+    assert agg.flush() is None

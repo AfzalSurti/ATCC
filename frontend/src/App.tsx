@@ -1,14 +1,41 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BatchJob,
+  JunctionType,
+  JunctionTypeInfo,
   cancelJob,
   fetchJob,
   fetchJobs,
+  fetchJunctionTypes,
   reportDownloadUrl,
   uploadVideos,
 } from "./api";
 import { UploadZone } from "./UploadZone";
 import { JobCard } from "./JobCard";
+
+const FALLBACK_TYPES: JunctionTypeInfo[] = [
+  {
+    id: "two_way",
+    label: "2-way road",
+    arms: 1,
+    movements: 2,
+    description: "Incoming + outgoing (2 ways).",
+  },
+  {
+    id: "three_way",
+    label: "3-way / T-junction",
+    arms: 3,
+    movements: 6,
+    description: "Three approaches × IN + OUT (6 ways).",
+  },
+  {
+    id: "four_way",
+    label: "4-way crossroads",
+    arms: 4,
+    movements: 8,
+    description: "Four approaches × IN + OUT (8 ways).",
+  },
+];
 
 export default function App() {
   const [files, setFiles] = useState<File[]>([]);
@@ -16,6 +43,8 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeIds, setActiveIds] = useState<string[]>([]);
+  const [junctionType, setJunctionType] = useState<JunctionType>("four_way");
+  const [junctionTypes, setJunctionTypes] = useState<JunctionTypeInfo[]>(FALLBACK_TYPES);
 
   const refreshList = useCallback(async () => {
     try {
@@ -25,16 +54,17 @@ export default function App() {
         list.filter((j) => j.status === "queued" || j.status === "running").map((j) => j.job_id),
       );
     } catch (err) {
-      // API may not be up yet on first paint
       console.warn(err);
     }
   }, []);
 
   useEffect(() => {
     void refreshList();
+    void fetchJunctionTypes()
+      .then(setJunctionTypes)
+      .catch(() => setJunctionTypes(FALLBACK_TYPES));
   }, [refreshList]);
 
-  // Poll active jobs
   useEffect(() => {
     if (activeIds.length === 0) return;
     const timer = window.setInterval(async () => {
@@ -55,12 +85,14 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [activeIds]);
 
+  const selectedInfo = junctionTypes.find((t) => t.id === junctionType) ?? FALLBACK_TYPES[2];
+
   const onUpload = async () => {
     if (files.length === 0) return;
     setUploading(true);
     setError(null);
     try {
-      const job = await uploadVideos(files);
+      const job = await uploadVideos(files, junctionType);
       setFiles([]);
       setJobs((prev) => [job, ...prev.filter((j) => j.job_id !== job.job_id)]);
       setActiveIds((ids) => Array.from(new Set([job.job_id, ...ids])));
@@ -93,17 +125,38 @@ export default function App() {
           <div className="brand-mark">ATCC</div>
           <h1>Traffic counter</h1>
           <p>
-            Upload one or more roadside videos. The server detects, tracks, and counts vehicles,
-            then returns Excel reports — no copying files into a backend folder.
+            Upload roadside videos and count vehicles on every junction movement — 2-way (2),
+            3-way (6), or 4-way (8) — with class totals for bicycle, car, truck, and more.
           </p>
         </div>
       </header>
 
       <section className="panel">
+        <div className="junction-picker">
+          <div className="section-title" style={{ marginTop: 0 }}>
+            <h2>Junction type</h2>
+            <span>{selectedInfo.movements} counting ways</span>
+          </div>
+          <div className="junction-options">
+            {junctionTypes.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={`junction-card ${junctionType === t.id ? "selected" : ""}`}
+                onClick={() => setJunctionType(t.id)}
+              >
+                <strong>{t.label}</strong>
+                <span>{t.movements} ways · {t.arms} arm(s)</span>
+                <em>{t.description}</em>
+              </button>
+            ))}
+          </div>
+        </div>
+
         <UploadZone files={files} onChange={setFiles} />
         <div className="actions">
           <button className="btn btn-primary" disabled={files.length === 0 || uploading} onClick={onUpload}>
-            {uploading ? "Uploading…" : `Process ${pendingLabel}`}
+            {uploading ? "Uploading…" : `Process ${pendingLabel} (${selectedInfo.movements}-way)`}
           </button>
           <button className="btn btn-ghost" disabled={files.length === 0 || uploading} onClick={() => setFiles([])}>
             Clear selection
@@ -119,7 +172,7 @@ export default function App() {
 
       <div className="job-list">
         {jobs.length === 0 ? (
-          <div className="panel empty">No jobs yet. Drop MP4 / MOV / MKV / WEBM files above.</div>
+          <div className="panel empty">No jobs yet. Choose a junction type, then drop videos.</div>
         ) : (
           jobs.map((job) => (
             <JobCard

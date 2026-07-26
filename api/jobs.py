@@ -12,7 +12,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from src.config_loader import load_config, project_root, resolve_path
+from src.junction import (
+    describe_junction_types,
+    expected_movements,
+    junction_to_lane_configs,
+    normalize_junction_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +49,7 @@ class VideoJobItem:
     error: str | None = None
     lane_counts: dict[str, int] = field(default_factory=dict)
     class_counts: dict[str, int] = field(default_factory=dict)
+    movement_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -52,7 +61,8 @@ class BatchJob:
     status: JobStatus = JobStatus.QUEUED
     videos: list[VideoJobItem] = field(default_factory=list)
     error: str | None = None
-    progress: float = 0.0  # 0..1 across the batch
+    progress: float = 0.0
+    junction_type: str = "four_way"
 
 
 class JobManager:
@@ -68,15 +78,13 @@ class JobManager:
         self._lock = threading.Lock()
         self._pipelines: dict[str, Any] = {}
 
-    def create_job(self, saved_files: list[tuple[str, Path]]) -> BatchJob:
-        """Register a new batch from saved upload paths.
-
-        Args:
-            saved_files: List of ``(original_filename, absolute_path)``.
-
-        Returns:
-            The created ``BatchJob``.
-        """
+    def create_job(
+        self,
+        saved_files: list[tuple[str, Path]],
+        junction_type: str = "four_way",
+    ) -> BatchJob:
+        """Register a new batch from saved upload paths."""
+        jtype = normalize_junction_type(junction_type)
         job_id = uuid.uuid4().hex[:12]
         videos = [
             VideoJobItem(
@@ -91,6 +99,7 @@ class JobManager:
             created_at=datetime.now(timezone.utc).isoformat(),
             status=JobStatus.QUEUED,
             videos=videos,
+            junction_type=jtype,
         )
         with self._lock:
             self._jobs[job_id] = job
@@ -144,6 +153,8 @@ class JobManager:
             "status": job.status.value,
             "progress": job.progress,
             "error": job.error,
+            "junction_type": job.junction_type,
+            "expected_movements": expected_movements(job.junction_type),
             "videos": [
                 {
                     "video_id": v.video_id,
@@ -154,6 +165,7 @@ class JobManager:
                     "annotated_path": v.annotated_path,
                     "error": v.error,
                     "lane_counts": v.lane_counts,
+                    "movement_counts": v.movement_counts or v.lane_counts,
                     "class_counts": v.class_counts,
                     "report_url": (
                         f"/api/jobs/{job.job_id}/videos/{v.video_id}/report"
@@ -165,6 +177,41 @@ class JobManager:
             ],
         }
 
+    def _load_junction_preset(self, junction_type: str) -> dict[str, Any]:
+        """Load arms from configs_examples/junction_*.yaml for the selected type."""
+        jtype = normalize_junction_type(junction_type)
+        preset_path = project_root() / "configs_examples" / f"junction_{jtype}.yaml"
+        if not preset_path.is_file():
+            return {}
+        with preset_path.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        return dict(data.get("junction") or {})
+
+    def build_config_for_job(self, junction_type: str) -> dict[str, Any]:
+        """Merge base camera config with the selected junction type/preset arms."""
+        cfg = copy.deepcopy(load_config(self.config_path))
+        jtype = normalize_junction_type(junction_type)
+        base_j = dict(cfg.get("junction") or {})
+        preset = self._load_junction_preset(jtype)
+
+        # Prefer calibrated arms from camera_config when type already matches.
+        if normalize_junction_type(str(base_j.get("type", jtype))) == jtype and base_j.get("arms"):
+            try:
+                junction_to_lane_configs({"junction": {**base_j, "type": jtype}})
+                cfg["junction"] = {**base_j, "type": jtype}
+                return cfg
+            except ValueError:
+                logger.warning("Base junction arms invalid for %s — using preset", jtype)
+
+        merged = {**preset, "type": jtype}
+        if not merged.get("arms") and not merged.get("movements"):
+            raise ValueError(f"No junction arms configured for type {jtype}")
+        junction_to_lane_configs({"junction": merged})
+        cfg["junction"] = merged
+        # Remove legacy lanes so junction takes effect exclusively
+        cfg.pop("lanes", None)
+        return cfg
+
     def _run_job(self, job_id: str) -> None:
         """Process each video sequentially."""
         job = self.get_job(job_id)
@@ -172,7 +219,13 @@ class JobManager:
             return
 
         job.status = JobStatus.RUNNING
-        base_cfg = load_config(self.config_path)
+        try:
+            base_cfg = self.build_config_for_job(job.junction_type)
+        except Exception as exc:  # noqa: BLE001
+            job.status = JobStatus.FAILED
+            job.error = str(exc)
+            return
+
         total = max(len(job.videos), 1)
 
         for idx, video in enumerate(job.videos):
@@ -204,15 +257,11 @@ class JobManager:
                     self._pipelines[job_id] = pipeline
 
                 report = pipeline.run()
-                snap = store.snapshot()
-
                 video.total_events = pipeline.total_events
                 video.report_path = str(report)
-                video.lane_counts = dict(snap.lane_counts) or {
-                    lane.name: lane.display_count for lane in pipeline.counter.lanes
-                }
-                video.class_counts = dict(snap.class_counts)
-                # Best-effort annotated path
+                video.movement_counts = pipeline.counter.movement_totals()
+                video.lane_counts = dict(video.movement_counts)
+                video.class_counts = pipeline.counter.class_totals()
                 vis_dir = resolve_path(str(cfg["visualization"].get("output_dir", "outputs/annotated")))
                 annotated = sorted(vis_dir.glob(f"annotated_{pipeline.exporter.session_id}.*"))
                 video.annotated_path = str(annotated[-1]) if annotated else None
@@ -235,18 +284,11 @@ class JobManager:
             job.progress = (idx + 1) / total
 
         if job.status != JobStatus.CANCELLED:
-            if any(v.status == JobStatus.FAILED for v in job.videos) and all(
-                v.status in {JobStatus.FAILED, JobStatus.COMPLETED} for v in job.videos
-            ):
-                job.status = (
-                    JobStatus.FAILED
-                    if all(v.status == JobStatus.FAILED for v in job.videos)
-                    else JobStatus.COMPLETED
-                )
+            if all(v.status == JobStatus.FAILED for v in job.videos):
+                job.status = JobStatus.FAILED
             else:
                 job.status = JobStatus.COMPLETED
         job.progress = 1.0 if job.status != JobStatus.CANCELLED else job.progress
 
 
-# Process-wide singleton used by the FastAPI app.
 MANAGER = JobManager()

@@ -11,7 +11,15 @@ Video-based vehicle detection, classification, tracking, per-lane counting, Exce
 
 ## React dashboard (upload videos in the browser)
 
-Users upload **one or many** videos from the UI. Files go to the API — you do **not** copy them into a backend folder by hand.
+Users upload **one or many** videos from the UI and choose junction type:
+
+| Type | Ways counted |
+|------|----------------|
+| 2-way | 2 (in + out) |
+| 3-way | 6 (3 arms × in/out) |
+| 4-way | 8 (4 arms × in/out) |
+
+Full explanation of the model and stack: **[docs/JUNCTION_COUNTING.md](docs/JUNCTION_COUNTING.md)**
 
 ```powershell
 # Terminal 1 — API
@@ -26,9 +34,7 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:5173** → drop/select videos → Process → download Excel when each video completes.
-
-API docs: http://127.0.0.1:8000/docs
+Open **http://localhost:5173** → pick junction type → drop videos → Process → download Excel.
 
 ## Architecture
 
