@@ -4,14 +4,19 @@ import {
   JunctionType,
   JunctionTypeInfo,
   cancelJob,
+  downloadReport,
   fetchJob,
   fetchJobs,
   fetchJunctionTypes,
-  reportDownloadUrl,
+  fetchMe,
+  login,
+  signup,
   uploadVideos,
 } from "./api";
+import { AuthForm } from "./AuthForm";
 import { UploadZone } from "./UploadZone";
 import { JobCard } from "./JobCard";
+import { clearSession, getSavedEmail, getToken, setSession } from "./authStorage";
 
 const FALLBACK_TYPES: JunctionTypeInfo[] = [
   {
@@ -37,7 +42,14 @@ const FALLBACK_TYPES: JunctionTypeInfo[] = [
   },
 ];
 
+type AuthMode = "login" | "signup";
+
 export default function App() {
+  const [token, setToken] = useState<string | null>(() => getToken());
+  const [email, setEmail] = useState<string | null>(() => getSavedEmail());
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [authChecking, setAuthChecking] = useState(Boolean(getToken()));
+
   const [files, setFiles] = useState<File[]>([]);
   const [jobs, setJobs] = useState<BatchJob[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -46,7 +58,39 @@ export default function App() {
   const [junctionType, setJunctionType] = useState<JunctionType>("four_way");
   const [junctionTypes, setJunctionTypes] = useState<JunctionTypeInfo[]>(FALLBACK_TYPES);
 
+  const logout = useCallback(() => {
+    clearSession();
+    setToken(null);
+    setEmail(null);
+    setJobs([]);
+    setActiveIds([]);
+    setError(null);
+  }, []);
+
+  useEffect(() => {
+    if (!token) {
+      setAuthChecking(false);
+      return;
+    }
+    let cancelled = false;
+    void fetchMe()
+      .then((me) => {
+        if (cancelled) return;
+        setEmail(me.email);
+        setAuthChecking(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        logout();
+        setAuthChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, logout]);
+
   const refreshList = useCallback(async () => {
+    if (!getToken()) return;
     try {
       const list = await fetchJobs();
       setJobs(list);
@@ -55,15 +99,19 @@ export default function App() {
       );
     } catch (err) {
       console.warn(err);
+      if (err instanceof Error && /not authenticated|invalid|401/i.test(err.message)) {
+        logout();
+      }
     }
-  }, []);
+  }, [logout]);
 
   useEffect(() => {
+    if (!token || authChecking) return;
     void refreshList();
     void fetchJunctionTypes()
       .then(setJunctionTypes)
       .catch(() => setJunctionTypes(FALLBACK_TYPES));
-  }, [refreshList]);
+  }, [token, authChecking, refreshList]);
 
   useEffect(() => {
     if (activeIds.length === 0) return;
@@ -84,6 +132,13 @@ export default function App() {
     }, 700);
     return () => window.clearInterval(timer);
   }, [activeIds]);
+
+  const onAuth = async (authEmail: string, password: string) => {
+    const result = authMode === "login" ? await login(authEmail, password) : await signup(authEmail, password);
+    setSession(result.access_token, result.email);
+    setToken(result.access_token);
+    setEmail(result.email);
+  };
 
   const selectedInfo = junctionTypes.find((t) => t.id === junctionType) ?? FALLBACK_TYPES[2];
 
@@ -112,11 +167,39 @@ export default function App() {
     }
   };
 
+  const onDownload = async (job: BatchJob, videoId: string) => {
+    const video = job.videos.find((v) => v.video_id === videoId);
+    if (!video) return;
+    try {
+      await downloadReport(job, video);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const pendingLabel = useMemo(() => {
     if (files.length === 0) return "No videos selected";
     if (files.length === 1) return "1 video ready";
     return `${files.length} videos ready`;
   }, [files.length]);
+
+  if (authChecking) {
+    return (
+      <div className="app">
+        <div className="panel empty">Checking your session…</div>
+      </div>
+    );
+  }
+
+  if (!token) {
+    return (
+      <AuthForm
+        mode={authMode}
+        onSubmit={onAuth}
+        onSwitch={() => setAuthMode((m) => (m === "login" ? "signup" : "login"))}
+      />
+    );
+  }
 
   return (
     <div className="app">
@@ -125,9 +208,15 @@ export default function App() {
           <div className="brand-mark">ATCC</div>
           <h1>Traffic counter</h1>
           <p>
-            Upload roadside videos and count vehicles on every junction movement — 2-way (2),
-            3-way (6), or 4-way (8) — with class totals for bicycle, car, truck, and more.
+            Upload roadside videos and count vehicles on every junction movement. Processing runs on
+            the server — you can close this tab and come back to this account anytime.
           </p>
+        </div>
+        <div className="account-bar">
+          <span className="account-email">{email}</span>
+          <button className="btn btn-ghost" type="button" onClick={logout}>
+            Log out
+          </button>
         </div>
       </header>
 
@@ -146,7 +235,9 @@ export default function App() {
                 onClick={() => setJunctionType(t.id)}
               >
                 <strong>{t.label}</strong>
-                <span>{t.movements} ways · {t.arms} arm(s)</span>
+                <span>
+                  {t.movements} ways · {t.arms} arm(s)
+                </span>
                 <em>{t.description}</em>
               </button>
             ))}
@@ -166,7 +257,7 @@ export default function App() {
       </section>
 
       <div className="section-title">
-        <h2>Jobs</h2>
+        <h2>Your jobs</h2>
         <span>{jobs.length === 0 ? "Upload to create a job" : `${jobs.length} job(s)`}</span>
       </div>
 
@@ -179,7 +270,7 @@ export default function App() {
               key={job.job_id}
               job={job}
               onCancel={() => void onCancel(job.job_id)}
-              reportUrl={(video) => reportDownloadUrl(job, video)}
+              onDownload={(videoId) => void onDownload(job, videoId)}
             />
           ))
         )}

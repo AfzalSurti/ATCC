@@ -418,6 +418,48 @@ input {
   }
 }
 
+.account-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.account-email {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.auth-panel {
+  display: grid;
+  gap: 1rem;
+  max-width: 420px;
+}
+
+.field {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.field span {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.field input {
+  width: 100%;
+  padding: 0.7rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--text);
+}
+
+.field input:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-color: var(--accent);
+}
+
 @media (max-width: 640px) {
   .app {
     width: min(100% - 1.25rem, 1120px);
@@ -426,5 +468,10 @@ input {
 
   .dropzone {
     padding: 1.75rem 1rem;
+  }
+
+  .account-bar {
+    width: 100%;
+    justify-content: space-between;
   }
 }

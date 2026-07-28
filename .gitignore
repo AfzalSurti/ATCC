@@ -72,6 +72,7 @@ frontend/.vite/
 # Env / secrets / logs
 .env
 .env.*
+!.env.example
 *.log
 *.tmp
 *.temp

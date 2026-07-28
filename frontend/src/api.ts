@@ -39,7 +39,18 @@ export interface BatchJob {
   videos: VideoResult[];
 }
 
+export interface AuthUser {
+  access_token: string;
+  email: string;
+  user_id: number;
+}
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+
+function authHeaders(): HeadersInit {
+  const token = localStorage.getItem("atcc_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 async function parseJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -53,6 +64,29 @@ async function parseJson<T>(res: Response): Promise<T> {
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return res.json() as Promise<T>;
+}
+
+export async function signup(email: string, password: string): Promise<AuthUser> {
+  const res = await fetch(`${API_BASE}/api/auth/signup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  return parseJson<AuthUser>(res);
+}
+
+export async function login(email: string, password: string): Promise<AuthUser> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  return parseJson<AuthUser>(res);
+}
+
+export async function fetchMe(): Promise<{ user_id: number; email: string }> {
+  const res = await fetch(`${API_BASE}/api/auth/me`, { headers: authHeaders() });
+  return parseJson(res);
 }
 
 export async function fetchJunctionTypes(): Promise<JunctionTypeInfo[]> {
@@ -69,28 +103,44 @@ export async function uploadVideos(files: File[], junctionType: JunctionType): P
   form.append("junction_type", junctionType);
   const res = await fetch(`${API_BASE}/api/upload`, {
     method: "POST",
+    headers: authHeaders(),
     body: form,
   });
   return parseJson<BatchJob>(res);
 }
 
 export async function fetchJob(jobId: string): Promise<BatchJob> {
-  const res = await fetch(`${API_BASE}/api/jobs/${jobId}`);
+  const res = await fetch(`${API_BASE}/api/jobs/${jobId}`, { headers: authHeaders() });
   return parseJson<BatchJob>(res);
 }
 
 export async function fetchJobs(): Promise<BatchJob[]> {
-  const res = await fetch(`${API_BASE}/api/jobs`);
+  const res = await fetch(`${API_BASE}/api/jobs`, { headers: authHeaders() });
   const data = await parseJson<{ jobs: BatchJob[] }>(res);
   return data.jobs;
 }
 
 export async function cancelJob(jobId: string): Promise<BatchJob> {
-  const res = await fetch(`${API_BASE}/api/jobs/${jobId}/cancel`, { method: "POST" });
+  const res = await fetch(`${API_BASE}/api/jobs/${jobId}/cancel`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
   return parseJson<BatchJob>(res);
 }
 
-export function reportDownloadUrl(job: BatchJob, video: VideoResult): string | null {
-  if (!video.report_url) return null;
-  return `${API_BASE}${video.report_url}`;
+export async function downloadReport(job: BatchJob, video: VideoResult): Promise<void> {
+  if (!video.report_url) return;
+  const res = await fetch(`${API_BASE}${video.report_url}`, { headers: authHeaders() });
+  if (!res.ok) {
+    throw new Error("Failed to download report");
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${video.filename.replace(/\.[^.]+$/, "")}_counts.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }

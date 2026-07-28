@@ -1,12 +1,12 @@
-import { BatchJob, VideoResult } from "./api";
+import { BatchJob } from "./api";
 
 interface Props {
   job: BatchJob;
   onCancel: () => void;
-  reportUrl: (video: VideoResult) => string | null;
+  onDownload: (videoId: string) => void;
 }
 
-export function JobCard({ job, onCancel, reportUrl }: Props) {
+export function JobCard({ job, onCancel, onDownload }: Props) {
   const running = job.status === "running" || job.status === "queued";
 
   return (
@@ -40,7 +40,7 @@ export function JobCard({ job, onCancel, reportUrl }: Props) {
 
       <div className="video-grid">
         {job.videos.map((video) => {
-          const url = reportUrl(video);
+          const canDownload = Boolean(video.report_url);
           const movements = Object.entries(video.movement_counts || video.lane_counts || {});
           const classes = Object.entries(video.class_counts || {});
           const pct = Math.round((video.video_progress || 0) * 100);
@@ -119,11 +119,15 @@ export function JobCard({ job, onCancel, reportUrl }: Props) {
                   ) : null}
                 </div>
               )}
-              {url ? (
+              {canDownload ? (
                 <div>
-                  <a className="btn btn-primary" href={url} style={{ display: "inline-block", textDecoration: "none" }}>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={() => onDownload(video.video_id)}
+                  >
                     Download Excel
-                  </a>
+                  </button>
                 </div>
               ) : null}
             </div>

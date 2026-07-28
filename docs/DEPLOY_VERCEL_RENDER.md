@@ -41,8 +41,12 @@ pip install --upgrade pip && pip install torch torchvision --index-url https://d
 | Key | Value |
 |-----|--------|
 | `PYTHON_VERSION` | `3.11.9` |
+| `DATABASE_URL` | Neon Postgres URL (`postgresql://…?sslmode=require`) |
+| `JWT_SECRET` | long random string (Render can auto-generate) |
 | `CORS_ORIGINS` | `*` *(temporary; replace with Vercel URL in Step 3)* |
 | `SERVE_FRONTEND` | `0` |
+
+**Auth note:** Users sign up / log in on the site. Jobs are stored in Neon and keep processing on Render after the browser tab closes.
 
 5. Click **Create Web Service** → wait for build (10–20+ min first time; torch is large).
 6. When live, open:  
@@ -89,10 +93,11 @@ pip install --upgrade pip && pip install torch torchvision --index-url https://d
 ## STEP 4 — Smoke test
 
 1. Open Vercel site  
-2. Pick **2-way**  
-3. Upload a **short** video (30–60 sec)  
-4. Watch job progress  
-5. Download Excel when done  
+2. **Sign up** (or log in)  
+3. Pick **2-way**  
+4. Upload a **short** video (30–60 sec)  
+5. Close the tab if you want — processing continues on Render  
+6. Log back in → open **Your jobs** → download Excel when done  
 
 If the first request is slow: Render free tier **cold-starts** after idle.
 
@@ -107,9 +112,11 @@ If the first request is slow: Render free tier **cold-starts** after idle.
 | API 404 on `/api/...` | Confirm start command uses `api.main:app` |
 | Upload works but never finishes | CPU too slow / service slept; use short video or paid plan |
 | `VITE_API_BASE` ignored | Rebuild on Vercel after changing env vars |
+| `DATABASE_URL is not set` | Add Neon connection string on Render Environment |
+| Login fails after redeploy | Keep the same `JWT_SECRET` across deploys |
 
 ---
 
 ## Optional: Blueprint deploy
 
-Repo includes `render.yaml`. On Render: **New** → **Blueprint** → select this repo → set `CORS_ORIGINS` when prompted.
+Repo includes `render.yaml`. On Render: **New** → **Blueprint** → select this repo → set `CORS_ORIGINS` and `DATABASE_URL` when prompted.
