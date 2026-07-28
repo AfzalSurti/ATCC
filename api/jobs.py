@@ -50,6 +50,11 @@ class VideoJobItem:
     lane_counts: dict[str, int] = field(default_factory=dict)
     class_counts: dict[str, int] = field(default_factory=dict)
     movement_counts: dict[str, int] = field(default_factory=dict)
+    frames_done: int = 0
+    frames_total: int = 0
+    video_progress: float = 0.0
+    fps: float = 0.0
+    message: str = ""
 
 
 @dataclass
@@ -167,6 +172,11 @@ class JobManager:
                     "lane_counts": v.lane_counts,
                     "movement_counts": v.movement_counts or v.lane_counts,
                     "class_counts": v.class_counts,
+                    "frames_done": v.frames_done,
+                    "frames_total": v.frames_total,
+                    "video_progress": v.video_progress,
+                    "fps": v.fps,
+                    "message": v.message,
                     "report_url": (
                         f"/api/jobs/{job.job_id}/videos/{v.video_id}/report"
                         if v.report_path
@@ -233,6 +243,7 @@ class JobManager:
                 break
 
             video.status = JobStatus.RUNNING
+            video.message = "Queued for processing…"
             job.progress = idx / total
             try:
                 cfg = copy.deepcopy(base_cfg)
@@ -242,17 +253,35 @@ class JobManager:
                 cfg.setdefault("export", {})
                 cfg["export"]["mode"] = "session"
                 cfg["export"]["filename_prefix"] = f"atcc_{job_id}_{video.video_id}"
+                # Skip annotated MP4 for faster API jobs; still log progress to terminal.
                 cfg.setdefault("visualization", {})
-                cfg["visualization"]["enabled"] = True
+                cfg["visualization"]["enabled"] = False
                 cfg["visualization"]["publish_stats"] = False
                 cfg.setdefault("logging", {})
                 cfg["logging"]["per_frame_timing"] = False
+                cfg["logging"]["progress_every_n_frames"] = 1
+                cfg["logging"]["level"] = "INFO"
 
                 from src.pipeline import Pipeline
                 from src.stats_store import StatsStore
 
+                def _on_progress(info: dict[str, Any], _video=video, _job=job, _idx=idx, _total=total) -> None:
+                    _video.frames_done = int(info.get("frames_done", 0))
+                    _video.frames_total = int(info.get("frames_total", 0))
+                    _video.video_progress = float(info.get("progress", 0.0))
+                    _video.total_events = int(info.get("total_events", 0))
+                    _video.movement_counts = dict(info.get("movement_counts") or {})
+                    _video.lane_counts = dict(_video.movement_counts)
+                    _video.class_counts = dict(info.get("class_counts") or {})
+                    _video.fps = float(info.get("fps", 0.0))
+                    _video.message = str(info.get("message") or "")
+                    _job.progress = (_idx + _video.video_progress) / _total
+
+                video.message = "Loading YOLO model (first run may download weights)…"
+                logger.info("Job %s | loading model for %s", job_id, video.filename)
+
                 store = StatsStore()
-                pipeline = Pipeline(cfg, stats_store=store)
+                pipeline = Pipeline(cfg, stats_store=store, on_progress=_on_progress)
                 with self._lock:
                     self._pipelines[job_id] = pipeline
 
@@ -262,9 +291,9 @@ class JobManager:
                 video.movement_counts = pipeline.counter.movement_totals()
                 video.lane_counts = dict(video.movement_counts)
                 video.class_counts = pipeline.counter.class_totals()
-                vis_dir = resolve_path(str(cfg["visualization"].get("output_dir", "outputs/annotated")))
-                annotated = sorted(vis_dir.glob(f"annotated_{pipeline.exporter.session_id}.*"))
-                video.annotated_path = str(annotated[-1]) if annotated else None
+                video.video_progress = 1.0
+                video.frames_done = max(video.frames_done, video.frames_total)
+                video.message = f"Done · {video.total_events} vehicles"
                 video.status = JobStatus.COMPLETED
                 logger.info(
                     "Job %s video %s done — %d counts → %s",
@@ -277,6 +306,7 @@ class JobManager:
                 logger.exception("Job %s video %s failed", job_id, video.filename)
                 video.status = JobStatus.FAILED
                 video.error = str(exc)
+                video.message = f"Failed: {exc}"
             finally:
                 with self._lock:
                     self._pipelines.pop(job_id, None)

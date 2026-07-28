@@ -20,6 +20,11 @@ export interface VideoResult {
   lane_counts: Record<string, number>;
   movement_counts: Record<string, number>;
   class_counts: Record<string, number>;
+  frames_done: number;
+  frames_total: number;
+  video_progress: number;
+  fps: number;
+  message: string;
   report_url: string | null;
 }
 

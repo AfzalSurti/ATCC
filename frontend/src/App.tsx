@@ -81,7 +81,7 @@ export default function App() {
       } catch (err) {
         console.warn(err);
       }
-    }, 1500);
+    }, 700);
     return () => window.clearInterval(timer);
   }, [activeIds]);
 

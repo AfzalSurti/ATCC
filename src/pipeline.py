@@ -33,6 +33,7 @@ class Pipeline:
         config: dict[str, Any] | str | Path,
         stats_store: StatsStore | None = None,
         on_frame: Callable[[np.ndarray, list[Detection]], None] | None = None,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         """Build all pipeline stages from a config dict or YAML path.
 
@@ -40,6 +41,7 @@ class Pipeline:
             config: Config mapping or path to ``camera_config.yaml``.
             stats_store: Optional live stats publisher (defaults to global store).
             on_frame: Optional callback with annotated frame + tracks each tick.
+            on_progress: Optional callback with live progress dict each frame.
         """
         if isinstance(config, (str, Path)):
             self.config = load_config(config)
@@ -48,6 +50,7 @@ class Pipeline:
 
         self.stats = stats_store or GLOBAL_STATS
         self.on_frame = on_frame
+        self.on_progress = on_progress
         self._stop = False
 
         self.video = create_video_source(self.config)
@@ -67,8 +70,10 @@ class Pipeline:
         self.vis_dir = resolve_path(str(vis_cfg.get("output_dir", "outputs/annotated")))
         self._writer: cv2.VideoWriter | None = None
         self._timing = bool(self.config.get("logging", {}).get("per_frame_timing", True))
+        self._progress_every = int(self.config.get("logging", {}).get("progress_every_n_frames", 1))
         self.total_events = 0
         self._fps_ema = 0.0
+        self.frames_total_estimate = 0
 
     def request_stop(self) -> None:
         """Signal the run loop to exit (used by live stream / dashboard)."""
@@ -169,6 +174,39 @@ class Pipeline:
             report_path=str(self.exporter.workbook_path),
         )
 
+    def _emit_progress(self, packet: FramePacket, frame_ms: float) -> None:
+        """Notify listeners + log terminal progress for the current frame."""
+        done = packet.frame_index + 1
+        total = max(self.frames_total_estimate, done)
+        progress = min(1.0, done / float(total)) if total else 0.0
+        inst_fps = 1000.0 / frame_ms if frame_ms > 0 else 0.0
+        self._fps_ema = inst_fps if self._fps_ema == 0 else (0.8 * self._fps_ema + 0.2 * inst_fps)
+        movement_counts = {lane.name: lane.display_count for lane in self.counter.lanes}
+        class_counts = self.counter.class_totals()
+        payload = {
+            "frames_done": done,
+            "frames_total": total,
+            "progress": progress,
+            "total_events": self.total_events,
+            "movement_counts": movement_counts,
+            "class_counts": class_counts,
+            "fps": self._fps_ema,
+            "message": f"Frame {done}/{total} · vehicles={self.total_events}",
+        }
+        if self.on_progress is not None:
+            self.on_progress(payload)
+
+        if self._timing or (done == 1 or done % max(1, self._progress_every) == 0):
+            logger.info(
+                "PROGRESS frame %d/%d (%.0f%%) | vehicles=%d | fps=%.1f | frame=%.0fms",
+                done,
+                total,
+                progress * 100,
+                self.total_events,
+                self._fps_ema,
+                frame_ms,
+            )
+
     def run(self) -> Path:
         """Execute the full pipeline until the video ends or stop is requested.
 
@@ -177,11 +215,38 @@ class Pipeline:
         """
         t_pipeline_start = time.perf_counter()
         self.stats.set_status("running")
+        logger.info("Pipeline starting…")
 
         try:
             with self.video:
                 if self.video.width and self.video.height:
                     self.preprocessor.build_roi_mask(self.video.width, self.video.height)
+
+                stride = self.video._sample_stride()
+                if self.video.frame_count > 0:
+                    self.frames_total_estimate = max(1, int(round(self.video.frame_count / stride)))
+                else:
+                    self.frames_total_estimate = 0
+                logger.info(
+                    "Video ready | %dx%d | source_frames=%d | estimated_process_frames=%d",
+                    self.video.width,
+                    self.video.height,
+                    self.video.frame_count,
+                    self.frames_total_estimate,
+                )
+                if self.on_progress is not None:
+                    self.on_progress(
+                        {
+                            "frames_done": 0,
+                            "frames_total": self.frames_total_estimate,
+                            "progress": 0.0,
+                            "total_events": 0,
+                            "movement_counts": {},
+                            "class_counts": {},
+                            "fps": 0.0,
+                            "message": "Starting frame processing…",
+                        }
+                    )
 
                 for packet in self.video:
                     if self._stop:
@@ -214,15 +279,12 @@ class Pipeline:
 
         if self.preprocessor.should_skip_inference(frame):
             self.aggregator.observe_time(packet.timestamp)
-            if self._timing:
-                logger.debug("frame %d skipped (motion gate)", packet.frame_index)
+            total_ms = (time.perf_counter() - t0) * 1000
+            self._emit_progress(packet, total_ms)
             return
 
         detections = self.detector.predict(frame)
-        t_det = time.perf_counter()
-
         tracked = self.tracker.update(detections)
-        t_track = time.perf_counter()
 
         events = self.counter.update(tracked)
         for event in events:
@@ -241,9 +303,9 @@ class Pipeline:
                 }
             )
         self.aggregator.observe_time(packet.timestamp)
-        t_count = time.perf_counter()
 
-        annotated = self._annotate(packet.frame, tracked) if (self.visualize or self.publish_stats) else packet.frame
+        need_annotate = self.visualize or self.publish_stats or self.on_frame is not None
+        annotated = self._annotate(packet.frame, tracked) if need_annotate else packet.frame
 
         if self.visualize:
             self._ensure_writer(packet.frame, self.video.target_fps)
@@ -254,20 +316,8 @@ class Pipeline:
             self.on_frame(annotated, tracked)
 
         total_ms = (time.perf_counter() - t0) * 1000
-        self._publish(annotated, packet, total_ms)
-
-        if self._timing:
-            logger.info(
-                "frame %d | det=%.1fms track=%.1fms count=%.1fms total=%.1fms | dets=%d tracks=%d events=%d",
-                packet.frame_index,
-                (t_det - t0) * 1000,
-                (t_track - t_det) * 1000,
-                (t_count - t_track) * 1000,
-                total_ms,
-                len(detections),
-                len(tracked),
-                len(events),
-            )
+        self._publish(annotated if need_annotate else packet.frame, packet, total_ms)
+        self._emit_progress(packet, total_ms)
 
 
 def run_from_config(config_path: str | Path) -> Path:
