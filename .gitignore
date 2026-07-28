@@ -20,20 +20,40 @@ build/
 *.swp
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Model weights (downloaded at runtime)
+# Model weights (downloaded / local)
 *.pt
 *.onnx
 *.engine
+*.weights
 !docs/**
 
-# Data & outputs (large / generated)
+# Videos anywhere in the repo (root uploads, samples, WhatsApp exports, etc.)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.m4v
+*.MP4
+*.MOV
+
+# Spreadsheets / reports generated locally
+*.xlsx
+*.xls
+*.csv
+!docs/**
+
+# Data folders (keep placeholders only)
 data/sample_videos/*
 !data/sample_videos/.gitkeep
 data/datasets/*
 !data/datasets/.gitkeep
 data/uploads/*
 !data/uploads/.gitkeep
+
+# Pipeline outputs (keep placeholders only)
 outputs/reports/*
 !outputs/reports/.gitkeep
 outputs/annotated/*
@@ -42,12 +62,16 @@ outputs/models/*
 !outputs/models/.gitkeep
 runs/
 ultralytics/
+wandb/
 
 # Frontend
 frontend/node_modules/
 frontend/dist/
+frontend/.vite/
 
-# Env / secrets
+# Env / secrets / logs
 .env
 .env.*
 *.log
+*.tmp
+*.temp
