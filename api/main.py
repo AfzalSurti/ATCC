@@ -11,6 +11,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -35,20 +36,36 @@ logger = logging.getLogger("atcc.api")
 
 ALLOWED_EXT = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 
-app = FastAPI(title="ATCC API", version="0.3.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+def _cors_origins() -> list[str]:
+    """Local defaults + optional CORS_ORIGINS env (comma-separated)."""
+    defaults = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-    ],
-    allow_credentials=True,
+    ]
+    extra = os.getenv("CORS_ORIGINS", "").strip()
+    if not extra:
+        return defaults
+    parsed = [o.strip() for o in extra.split(",") if o.strip()]
+    # Allow * for quick demos (no credentials mode needed for our API)
+    return list(dict.fromkeys(defaults + parsed))
+
+
+app = FastAPI(title="ATCC API", version="0.3.0")
+
+_origins = _cors_origins()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins if "*" not in _origins else ["*"],
+    allow_credentials="*" not in _origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+logger.info("CORS origins: %s", _origins)
 
 
 def _safe_name(name: str) -> str:
@@ -179,8 +196,9 @@ def download_report(job_id: str, video_id: str) -> FileResponse:
 
 
 # Optional: serve built React app from frontend/dist when present
+# (Disabled on Vercel+Render split unless SERVE_FRONTEND=1)
 _dist = ROOT / "frontend" / "dist"
-if _dist.is_dir():
+if os.getenv("SERVE_FRONTEND", "").strip() in {"1", "true", "yes"} and _dist.is_dir():
     app.mount("/", StaticFiles(directory=str(_dist), html=True), name="frontend")
 
 

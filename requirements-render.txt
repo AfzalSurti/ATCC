@@ -1,0 +1,14 @@
+# Render / cloud API dependencies (CPU).
+# Install torch CPU wheel first in the build command (see render.yaml).
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+ultralytics==8.3.70
+supervision==0.25.1
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+pandas==2.2.3
+openpyxl==3.1.5
+PyYAML==6.0.2
+onnxruntime==1.20.1
