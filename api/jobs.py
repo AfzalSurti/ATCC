@@ -52,6 +52,14 @@ class JobManager:
     def _session(self) -> Session:
         return get_session_factory()()
 
+    def _detach_job(self, db: Session, job: Job) -> Job:
+        """Detach job + videos safely (expunge children before parent)."""
+        videos = list(job.videos)
+        for video in videos:
+            db.expunge(video)
+        db.expunge(job)
+        return job
+
     def create_job(
         self,
         user_id: int,
@@ -72,10 +80,9 @@ class JobManager:
             )
             db.add(job)
             for name, path in saved_files:
-                db.add(
+                job.videos.append(
                     JobVideo(
                         id=uuid.uuid4().hex[:8],
-                        job_id=job_id,
                         filename=name,
                         path=str(path),
                         status=JobStatus.QUEUED.value,
@@ -84,7 +91,13 @@ class JobManager:
                     )
                 )
             db.commit()
-            return self.get_job(job_id, user_id=user_id)  # type: ignore[return-value]
+            job = (
+                db.query(Job)
+                .options(joinedload(Job.videos))
+                .filter(Job.id == job_id)
+                .one()
+            )
+            return self._detach_job(db, job)
         finally:
             db.close()
 
@@ -102,11 +115,7 @@ class JobManager:
             job = q.first()
             if job is None:
                 return None
-            # Detach with videos loaded
-            db.expunge(job)
-            for v in job.videos:
-                db.expunge(v)
-            return job
+            return self._detach_job(db, job)
         finally:
             db.close()
 
@@ -121,11 +130,7 @@ class JobManager:
                 .order_by(Job.created_at.desc())
                 .all()
             )
-            for job in jobs:
-                db.expunge(job)
-                for v in job.videos:
-                    db.expunge(v)
-            return jobs
+            return [self._detach_job(db, job) for job in jobs]
         finally:
             db.close()
 

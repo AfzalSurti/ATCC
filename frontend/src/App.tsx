@@ -56,7 +56,7 @@ export default function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [jobs, setJobs] = useState<BatchJob[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [uploadSlow, setUploadSlow] = useState(false);
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeIds, setActiveIds] = useState<string[]>([]);
   const [junctionType, setJunctionType] = useState<JunctionType>("four_way");
@@ -139,12 +139,7 @@ export default function App() {
   }, [activeIds]);
 
   useEffect(() => {
-    if (!uploading) {
-      setUploadSlow(false);
-      return;
-    }
-    const timer = window.setTimeout(() => setUploadSlow(true), 3000);
-    return () => window.clearTimeout(timer);
+    if (!uploading) setUploadPct(null);
   }, [uploading]);
 
   const onAuth = async (authEmail: string, password: string) => {
@@ -159,9 +154,10 @@ export default function App() {
   const onUpload = async () => {
     if (files.length === 0) return;
     setUploading(true);
+    setUploadPct(0);
     setError(null);
     try {
-      const job = await uploadVideos(files, junctionType);
+      const job = await uploadVideos(files, junctionType, setUploadPct);
       setFiles([]);
       setJobs((prev) => [job, ...prev.filter((j) => j.job_id !== job.job_id)]);
       setActiveIds((ids) => Array.from(new Set([job.job_id, ...ids])));
@@ -169,6 +165,7 @@ export default function App() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setUploading(false);
+      setUploadPct(null);
     }
   };
 
@@ -279,8 +276,8 @@ export default function App() {
         <div className="actions">
           <button className="btn btn-primary" disabled={files.length === 0 || uploading} onClick={onUpload}>
             {uploading
-              ? uploadSlow
-                ? "Uploading (server may be busy)…"
+              ? uploadPct != null
+                ? `Uploading ${uploadPct}%…`
                 : "Uploading…"
               : `Process ${pendingLabel} (${selectedInfo.movements}-way)`}
           </button>
@@ -288,10 +285,14 @@ export default function App() {
             Clear selection
           </button>
         </div>
-        {uploading && uploadSlow ? (
+        {uploading ? (
           <div className="wake-inline" role="status">
             <span className="wake-inline-spin" aria-hidden="true" />
-            <span>Large uploads or a waking server can take a while — keep this tab open.</span>
+            <span>
+              {uploadPct != null && uploadPct < 100
+                ? `Sending video to the server (${uploadPct}%). Keep this tab open.`
+                : "Upload received — creating your job on the server…"}
+            </span>
           </div>
         ) : null}
         {error ? <div className="error-banner">{error}</div> : null}

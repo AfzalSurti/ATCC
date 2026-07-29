@@ -134,18 +134,66 @@ export async function fetchJunctionTypes(): Promise<JunctionTypeInfo[]> {
   return data.types;
 }
 
-export async function uploadVideos(files: File[], junctionType: JunctionType): Promise<BatchJob> {
+export async function uploadVideos(
+  files: File[],
+  junctionType: JunctionType,
+  onProgress?: (pct: number) => void,
+): Promise<BatchJob> {
   const form = new FormData();
   for (const file of files) {
     form.append("files", file);
   }
   form.append("junction_type", junctionType);
-  const res = await fetch(`${API_BASE}/api/upload`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: form,
+
+  // XMLHttpRequest so we can show upload % and fail clearly on timeout/network errors
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const token = localStorage.getItem("atcc_token");
+    xhr.open("POST", `${API_BASE}/api/upload`);
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.timeout = 10 * 60 * 1000; // 10 min for large videos + Render latency
+
+    xhr.upload.onprogress = (ev) => {
+      if (!ev.lengthComputable || !onProgress) return;
+      onProgress(Math.round((ev.loaded / ev.total) * 100));
+    };
+
+    xhr.onload = () => {
+      let body: unknown = null;
+      try {
+        body = JSON.parse(xhr.responseText || "{}");
+      } catch {
+        body = null;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body as BatchJob);
+        return;
+      }
+      const detail =
+        body && typeof body === "object" && body !== null && "detail" in body
+          ? (body as { detail: unknown }).detail
+          : xhr.statusText;
+      reject(
+        new Error(
+          typeof detail === "string" ? detail : JSON.stringify(detail) || `Upload failed (${xhr.status})`,
+        ),
+      );
+    };
+
+    xhr.onerror = () => {
+      reject(
+        new Error(
+          "Upload failed — network/CORS error. Confirm the Render API is live, then try a shorter video.",
+        ),
+      );
+    };
+    xhr.ontimeout = () => {
+      reject(new Error("Upload timed out after 10 minutes. Try a shorter video."));
+    };
+
+    onProgress?.(0);
+    xhr.send(form);
   });
-  return parseJson<BatchJob>(res);
 }
 
 export async function fetchJob(jobId: string): Promise<BatchJob> {
