@@ -43,7 +43,7 @@ pip install --upgrade pip && pip install torch torchvision --index-url https://d
 | `PYTHON_VERSION` | `3.11.9` |
 | `DATABASE_URL` | Neon Postgres URL (`postgresql://…?sslmode=require`) |
 | `JWT_SECRET` | long random string (Render can auto-generate) |
-| `CORS_ORIGINS` | `*` *(temporary; replace with Vercel URL in Step 3)* |
+| `CORS_ORIGINS` | `https://atcc-ten.vercel.app` *(no trailing slash; or `*`)* |
 | `SERVE_FRONTEND` | `0` |
 
 **Auth note:** Users sign up / log in on the site. Jobs are stored in Neon and keep processing on Render after the browser tab closes.

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -46,7 +46,11 @@ ALLOWED_EXT = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 
 
 def _cors_origins() -> list[str]:
-    """Local defaults + optional CORS_ORIGINS env (comma-separated)."""
+    """Local defaults + optional CORS_ORIGINS env (comma-separated).
+
+    Trailing slashes are stripped — `https://app.vercel.app/` must match
+    the browser Origin header without a slash.
+    """
     defaults = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
@@ -54,25 +58,31 @@ def _cors_origins() -> list[str]:
         "http://127.0.0.1:5174",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "https://atcc-ten.vercel.app",
     ]
     extra = os.getenv("CORS_ORIGINS", "").strip()
     if not extra:
         return defaults
-    parsed = [o.strip() for o in extra.split(",") if o.strip()]
+    parsed = [o.strip().rstrip("/") for o in extra.split(",") if o.strip()]
     return list(dict.fromkeys(defaults + parsed))
 
 
 app = FastAPI(title="ATCC API", version="0.4.0")
 
 _origins = _cors_origins()
+# Bearer JWT auth does not need cookie credentials — allow * when requested,
+# and always allow Vercel preview/prod hosts via regex.
+_allow_all = "*" in _origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_origins if "*" not in _origins else ["*"],
-    allow_credentials="*" not in _origins,
+    allow_origins=["*"] if _allow_all else _origins,
+    allow_origin_regex=r"https://.*\.vercel\.app" if not _allow_all else None,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
-logger.info("CORS origins: %s", _origins)
+logger.info("CORS origins: %s (allow_all=%s)", _origins, _allow_all)
 
 
 class SignupBody(BaseModel):
@@ -165,6 +175,7 @@ def me(user: User = Depends(get_current_user)) -> dict:
 
 @app.post("/api/upload")
 async def upload_videos(
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
     junction_type: str = Form("four_way"),
     user: User = Depends(get_current_user),
@@ -190,10 +201,18 @@ async def upload_videos(
             dest = staging / safe
             if dest.exists():
                 dest = staging / f"{dest.stem}_{len(saved)}{dest.suffix}"
-            data = await upload.read()
-            if not data:
+            # Stream to disk — avoid loading whole video into RAM (Render OOM → bare 500 / fake CORS)
+            size = 0
+            with dest.open("wb") as out:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    out.write(chunk)
+            if size == 0:
+                dest.unlink(missing_ok=True)
                 raise HTTPException(status_code=400, detail=f"Empty file: {original}")
-            dest.write_bytes(data)
             saved.append((original, dest))
     except HTTPException:
         raise
@@ -205,18 +224,28 @@ async def upload_videos(
         job = MANAGER.create_job(user.id, saved, junction_type=junction_type)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("create_job failed (check DATABASE_URL)")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not create job (database?): {exc}",
+        ) from exc
 
     final_dir = MANAGER.upload_root / job.id
     if staging.resolve() != final_dir.resolve():
+        if final_dir.exists():
+            raise HTTPException(status_code=500, detail="Job upload folder already exists")
         staging.rename(final_dir)
         for video in job.videos:
             new_path = str(final_dir / Path(video.path).name)
             MANAGER.update_video_path(video.id, new_path)
             video.path = new_path
 
-    MANAGER.start_job(job.id)
+    # Start AFTER the HTTP response is sent — loading YOLO during the request can OOM
+    # Render free tier and return a bare 500 with no CORS headers (looks like a CORS error).
+    background_tasks.add_task(MANAGER.start_job, job.id)
     logger.info(
-        "Started job %s for user %s (%s, %d movements) with %d video(s)",
+        "Queued job %s for user %s (%s, %d movements) with %d video(s)",
         job.id,
         user.email,
         job.junction_type,
