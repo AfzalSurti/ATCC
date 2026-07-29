@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 interface Props {
   mode: "login" | "signup";
@@ -10,10 +10,21 @@ export function AuthForm({ mode, onSubmit, onSwitch }: Props) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [slow, setSlow] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const title = mode === "login" ? "Log in" : "Create account";
-  const switchLabel = mode === "login" ? "Need an account? Sign up" : "Already have an account? Log in";
+  const switchLabel =
+    mode === "login" ? "Need an account? Sign up" : "Already have an account? Log in";
+
+  useEffect(() => {
+    if (!busy) {
+      setSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSlow(true), 2500);
+    return () => window.clearTimeout(timer);
+  }, [busy]);
 
   const handle = async (e: FormEvent) => {
     e.preventDefault();
@@ -51,6 +62,7 @@ export function AuthForm({ mode, onSubmit, onSwitch }: Props) {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@example.com"
+            disabled={busy}
           />
         </label>
         <label className="field">
@@ -63,12 +75,19 @@ export function AuthForm({ mode, onSubmit, onSwitch }: Props) {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="At least 6 characters"
+            disabled={busy}
           />
         </label>
+        {busy && slow ? (
+          <div className="wake-inline" role="status">
+            <span className="wake-inline-spin" aria-hidden="true" />
+            <span>Server is waking up on Render — first request can take up to a minute…</span>
+          </div>
+        ) : null}
         {error ? <div className="error-banner">{error}</div> : null}
         <div className="actions">
           <button className="btn btn-primary" type="submit" disabled={busy}>
-            {busy ? "Please wait…" : title}
+            {busy ? (slow ? "Waking server…" : "Please wait…") : title}
           </button>
           <button className="btn btn-ghost" type="button" onClick={onSwitch} disabled={busy}>
             {switchLabel}

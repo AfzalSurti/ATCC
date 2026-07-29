@@ -16,7 +16,9 @@ import {
 import { AuthForm } from "./AuthForm";
 import { UploadZone } from "./UploadZone";
 import { JobCard } from "./JobCard";
+import { ServerWakeScreen } from "./ServerWakeScreen";
 import { clearSession, getSavedEmail, getToken, setSession } from "./authStorage";
+import { useBackendReady } from "./useBackendReady";
 
 const FALLBACK_TYPES: JunctionTypeInfo[] = [
   {
@@ -45,6 +47,7 @@ const FALLBACK_TYPES: JunctionTypeInfo[] = [
 type AuthMode = "login" | "signup";
 
 export default function App() {
+  const backend = useBackendReady();
   const [token, setToken] = useState<string | null>(() => getToken());
   const [email, setEmail] = useState<string | null>(() => getSavedEmail());
   const [authMode, setAuthMode] = useState<AuthMode>("login");
@@ -53,6 +56,7 @@ export default function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [jobs, setJobs] = useState<BatchJob[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadSlow, setUploadSlow] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeIds, setActiveIds] = useState<string[]>([]);
   const [junctionType, setJunctionType] = useState<JunctionType>("four_way");
@@ -68,6 +72,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (backend.state !== "ready") return;
     if (!token) {
       setAuthChecking(false);
       return;
@@ -87,7 +92,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [token, logout]);
+  }, [backend.state, token, logout]);
 
   const refreshList = useCallback(async () => {
     if (!getToken()) return;
@@ -106,12 +111,12 @@ export default function App() {
   }, [logout]);
 
   useEffect(() => {
-    if (!token || authChecking) return;
+    if (backend.state !== "ready" || !token || authChecking) return;
     void refreshList();
     void fetchJunctionTypes()
       .then(setJunctionTypes)
       .catch(() => setJunctionTypes(FALLBACK_TYPES));
-  }, [token, authChecking, refreshList]);
+  }, [backend.state, token, authChecking, refreshList]);
 
   useEffect(() => {
     if (activeIds.length === 0) return;
@@ -132,6 +137,15 @@ export default function App() {
     }, 700);
     return () => window.clearInterval(timer);
   }, [activeIds]);
+
+  useEffect(() => {
+    if (!uploading) {
+      setUploadSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setUploadSlow(true), 3000);
+    return () => window.clearTimeout(timer);
+  }, [uploading]);
 
   const onAuth = async (authEmail: string, password: string) => {
     const result = authMode === "login" ? await login(authEmail, password) : await signup(authEmail, password);
@@ -183,12 +197,29 @@ export default function App() {
     return `${files.length} videos ready`;
   }, [files.length]);
 
-  if (authChecking) {
+  if (backend.state === "checking") {
+    return <ServerWakeScreen attempt={backend.attempt} />;
+  }
+
+  if (backend.state === "error") {
     return (
-      <div className="app">
-        <div className="panel empty">Checking your session…</div>
+      <div className="app wake-page">
+        <div className="panel wake-card">
+          <div className="brand-mark">ATCC</div>
+          <h1>Backend not reachable</h1>
+          <p className="wake-message">{backend.error}</p>
+          <div className="actions" style={{ justifyContent: "center" }}>
+            <button className="btn btn-primary" type="button" onClick={() => void backend.retry()}>
+              Retry wake-up
+            </button>
+          </div>
+        </div>
       </div>
     );
+  }
+
+  if (authChecking) {
+    return <ServerWakeScreen title="Checking your session" detail="Confirming login with the API…" />;
   }
 
   if (!token) {
@@ -247,12 +278,22 @@ export default function App() {
         <UploadZone files={files} onChange={setFiles} />
         <div className="actions">
           <button className="btn btn-primary" disabled={files.length === 0 || uploading} onClick={onUpload}>
-            {uploading ? "Uploading…" : `Process ${pendingLabel} (${selectedInfo.movements}-way)`}
+            {uploading
+              ? uploadSlow
+                ? "Uploading (server may be busy)…"
+                : "Uploading…"
+              : `Process ${pendingLabel} (${selectedInfo.movements}-way)`}
           </button>
           <button className="btn btn-ghost" disabled={files.length === 0 || uploading} onClick={() => setFiles([])}>
             Clear selection
           </button>
         </div>
+        {uploading && uploadSlow ? (
+          <div className="wake-inline" role="status">
+            <span className="wake-inline-spin" aria-hidden="true" />
+            <span>Large uploads or a waking server can take a while — keep this tab open.</span>
+          </div>
+        ) : null}
         {error ? <div className="error-banner">{error}</div> : null}
       </section>
 

@@ -66,6 +66,45 @@ async function parseJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** Single health check — used to detect Render cold start. */
+export async function pingHealth(timeoutMs = 20000): Promise<boolean> {
+  const ctrl = new AbortController();
+  const timer = window.setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_BASE}/api/health`, {
+      signal: ctrl.signal,
+      cache: "no-store",
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { status?: string };
+    return data.status === "ok";
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export interface WaitForBackendOptions {
+  maxAttempts?: number;
+  onAttempt?: (attempt: number) => void;
+}
+
+/** Keep pinging until the Render API wakes (or give up). */
+export async function waitForBackend(options: WaitForBackendOptions = {}): Promise<void> {
+  const maxAttempts = options.maxAttempts ?? 40;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    options.onAttempt?.(attempt);
+    const ok = await pingHealth(attempt === 1 ? 25000 : 15000);
+    if (ok) return;
+    // Brief pause between tries (Render cold start often needs 30–90s)
+    await new Promise((r) => window.setTimeout(r, attempt < 3 ? 1500 : 2500));
+  }
+  throw new Error(
+    "Backend did not wake up in time. Open your Render service, confirm it is live, then retry.",
+  );
+}
+
 export async function signup(email: string, password: string): Promise<AuthUser> {
   const res = await fetch(`${API_BASE}/api/auth/signup`, {
     method: "POST",

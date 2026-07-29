@@ -460,6 +460,146 @@ input {
   border-color: var(--accent);
 }
 
+.wake-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 2rem 1rem;
+}
+
+.wake-card {
+  width: min(440px, 100%);
+  text-align: center;
+  display: grid;
+  gap: 0.85rem;
+  justify-items: center;
+  padding: 2rem 1.5rem;
+}
+
+.wake-card h1 {
+  margin: 0;
+  font-size: 1.55rem;
+  letter-spacing: -0.02em;
+}
+
+.wake-visual {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.wake-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--accent);
+  border-right-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: wake-spin 1.1s linear infinite;
+}
+
+.wake-ring-delay {
+  inset: 10px;
+  animation-duration: 1.6s;
+  animation-direction: reverse;
+  opacity: 0.65;
+}
+
+.wake-core {
+  position: absolute;
+  inset: 24px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: wake-pulse 1.4s ease-in-out infinite;
+}
+
+.wake-message {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.98rem;
+  line-height: 1.45;
+  max-width: 28rem;
+}
+
+.wake-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  max-width: 26rem;
+}
+
+.wake-bar {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  overflow: hidden;
+  margin-top: 0.35rem;
+}
+
+.wake-bar i {
+  display: block;
+  height: 100%;
+  width: 40%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: wake-slide 1.4s ease-in-out infinite;
+}
+
+.wake-inline {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  margin-top: 0.85rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 10px;
+  background: var(--accent-dim);
+  color: var(--text);
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.wake-inline-spin {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-top: 0.15rem;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: wake-spin 0.8s linear infinite;
+}
+
+@keyframes wake-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes wake-pulse {
+  0%,
+  100% {
+    transform: scale(0.92);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes wake-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
 @media (max-width: 640px) {
   .app {
     width: min(100% - 1.25rem, 1120px);
